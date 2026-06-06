@@ -36,12 +36,17 @@ from nuts_windows.capture.screen import capture_all
 from nuts_windows import memory as memory_mod
 from nuts_windows.hotkey import PushToTalk
 from nuts_windows.overlay import cursor as cursor_mod
-from nuts_windows.overlay.indicator import CursorIndicator, MicBadge, PointOverlay
+from nuts_windows.overlay.indicator import CursorIndicator, MicBadge
 from nuts_windows.overlay.persistent_badge import (
     PersistentBadge,
     STATE_IDLE,
     STATE_LISTENING,
     STATE_BUSY,
+)
+from nuts_windows.overlay.spring_arrow import (
+    SpringArrow,
+    STATE_IDLE as ARROW_IDLE,
+    STATE_LISTENING as ARROW_LISTENING,
 )
 from nuts_windows.overlay.panel import ControlPanel
 from nuts_windows.memory import Memory
@@ -91,7 +96,15 @@ class Application:
         )
         self._cursor_indicator = CursorIndicator()
         self._mic_badge = MicBadge()
-        self._point_overlay = PointOverlay()
+        # SpringArrow replaces the old PointOverlay (single static flash).
+        # It's a single full-screen click-through overlay that ALWAYS
+        # follows the user's cursor with spring physics, and redirects to
+        # any [POINT:x,y] target the model emits. Same widget handles both
+        # the "always-alive" follow AND the "fly to here" gesture, with the
+        # spring math smoothing the transition.
+        self._spring_arrow = SpringArrow()
+        self._spring_arrow.start()
+        self._spring_arrow.set_state(ARROW_IDLE)
         # Persistent badge - always visible just above the taskbar clock.
         # Hover halo intensifies, click toggles the floating panel. We
         # show this UP FRONT so users don't have to hunt for the tray
@@ -110,6 +123,7 @@ class Application:
             on_reload=self._reload,
             on_quit=self._quit,
             on_left_click=self._panel.toggle_near_tray,
+            on_test_arrow=self._demo_arrow,
         )
         self._hotkey = PushToTalk(
             self._cfg.hotkey,
@@ -132,6 +146,27 @@ class Application:
     def _reload(self) -> None:
         bootstrap.try_auto_signin()
         self._cfg = config.load()
+
+    def _demo_arrow(self) -> None:
+        """Smoke-test: fire the spring arrow at a random spot on the
+        primary screen so the user can see the physics without needing a
+        live model response. Wired to the tray menu's 'Test arrow' item.
+        """
+        from random import randint, choice
+        from PyQt6.QtGui import QGuiApplication as _Q
+        screen = _Q.primaryScreen().geometry()
+        # Pick a random point well inside the screen bounds.
+        margin = 80
+        x = randint(screen.left() + margin, screen.right() - margin)
+        y = randint(screen.top() + margin, screen.bottom() - margin)
+        label = choice([
+            "right here!",
+            "this button",
+            "look at this",
+            "your target",
+            "press this",
+        ])
+        self._spring_arrow.fly_to(x, y, label=label)
         self._sync_panel_state()
 
     def _quit(self) -> None:
@@ -173,21 +208,25 @@ class Application:
         # (immediate, hard to miss), the mic badge floating top-center of
         # the screen (explicit label), and the persistent badge by the clock
         # turning green (peripheral, always-visible state indicator).
+        # The spring arrow ALSO swaps to its green / listening palette so
+        # the always-on follower visually confirms the hotkey.
         self._cursor_indicator.start()
         self._mic_badge.start()
         self._persistent_badge.set_state(STATE_LISTENING)
+        self._spring_arrow.set_state(ARROW_LISTENING)
         self._panel.set_status("Listening")
 
     def _end_turn(self) -> None:
         """Hotkey released: stop the mic, send to worker, stream response."""
         # The cursor ring + mic badge go away the moment the user releases
-        # the hotkey, even if the recording was empty or the screenshot
-        # failed - the visual contract is "rings/badge = listening".
-        # The persistent badge transitions to "busy" while we wait on the
-        # model and back to "idle" once the stream finishes.
+        # the hotkey. The persistent badge transitions to "busy" while we
+        # wait on the model. The spring arrow returns to its idle
+        # tan-and-following palette (it stays on screen the whole time -
+        # that's the headline UX).
         self._cursor_indicator.stop()
         self._mic_badge.stop()
         self._persistent_badge.set_state(STATE_BUSY)
+        self._spring_arrow.set_state(ARROW_IDLE)
         rec = self._recorder.stop()
         if rec is None or self._last_screenshot is None:
             self._panel.set_status("Idle")
@@ -276,11 +315,15 @@ class Application:
         """Parse [POINT:...] tags out of the chunk; speak the rest."""
         for pt in cursor_mod.find_points(chunk):
             abs_pos = cursor_mod.move_cursor(pt, monitors)
-            # Flash the on-screen arrow so the user SEES where the model
-            # is pointing - the OS cursor jumps without visual context,
-            # the overlay arrow animates the destination so it's obvious.
             if abs_pos is not None:
-                self._point_overlay.flash_at(abs_pos[0], abs_pos[1])
+                # Hand off to the spring arrow. It picks up the new target,
+                # the physics smoothly redirects from "trailing the cursor"
+                # to "flying to (abs_x, abs_y)", and the model's label
+                # ("right here!") floats next to the head while held.
+                self._spring_arrow.fly_to(
+                    abs_pos[0], abs_pos[1],
+                    label=pt.label or "",
+                )
         speakable = cursor_mod.strip_points(chunk)
         if speakable:
             # Also surface the streaming text in the floating panel so

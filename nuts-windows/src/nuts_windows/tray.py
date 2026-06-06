@@ -41,6 +41,7 @@ class Tray:
         on_reload: Callable[[], None],
         on_quit: Callable[[], None],
         on_left_click: Optional[Callable[[], None]] = None,
+        on_test_arrow: Optional[Callable[[], None]] = None,
     ) -> None:
         self._app = app
         self._on_reload = on_reload
@@ -49,6 +50,10 @@ class Tray:
         # the floating control panel (the clicky-style UI). The right-click
         # context menu is always available regardless.
         self._on_left_click = on_left_click
+        # Test arrow handler - fires a synthetic [POINT:x,y] target at a
+        # random screen location so we can verify the spring physics without
+        # waiting on a real model response.
+        self._on_test_arrow = on_test_arrow
         self._icon = QSystemTrayIcon(_make_icon(), parent=app)
         self._icon.setToolTip("Akhort - hold Ctrl+Alt to talk")
         self._menu = QMenu()
@@ -140,6 +145,14 @@ class Tray:
         open_dash = QAction("Open dashboard", self._menu)
         open_dash.triggered.connect(lambda: webbrowser.open(DASHBOARD_URL))
         self._menu.addAction(open_dash)
+
+        # Dev / smoke-test: fly the spring arrow to a random spot so the
+        # user can see the physics without waiting for a real model
+        # response. Only listed when a handler is supplied.
+        if self._on_test_arrow is not None:
+            test_arrow = QAction("Test arrow (fly to random spot)", self._menu)
+            test_arrow.triggered.connect(self._on_test_arrow)
+            self._menu.addAction(test_arrow)
 
         reload = QAction("Reload config", self._menu)
         reload.triggered.connect(self._handle_reload)
