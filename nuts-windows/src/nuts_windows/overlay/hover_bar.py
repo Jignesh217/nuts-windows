@@ -46,7 +46,10 @@ from PyQt6.QtGui import (
     QPainter,
     QBrush,
     QPen,
+    QPolygonF,
+    QRadialGradient,
 )
+from PyQt6.QtCore import QPointF
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -149,6 +152,17 @@ class HoverBar(QWidget):
         self.raise_()
         _log.info("hover bar shown at %s", self.geometry())
 
+    def set_status(self, text: str) -> None:
+        """Legacy alias for set_state().
+
+        The original ControlPanel exposed set_status(); HoverBar replaced
+        it with set_state() for clarity, but a bunch of app.py callers
+        still use set_status() and silently raising AttributeError mid-
+        _begin_turn was *the* reason voice 'didn't work' in v0.7. Keep
+        the alias so the existing call sites just route through.
+        """
+        self.set_state(text.lower() if isinstance(text, str) else "idle")
+
     def set_state(self, state: str) -> None:
         self._state = state
         upper = state.upper()
@@ -176,11 +190,10 @@ class HoverBar(QWidget):
         self.set_response((current or "") + chunk)
 
     def set_active_color(self, hex_color: str) -> None:
-        """Highlight which swatch is currently selected."""
+        """Highlight which swatch is currently selected. Each swatch
+        owns its own active-state painting now."""
         for hex_, swatch in self._color_buttons.items():
-            swatch.setProperty("active", hex_.lower() == hex_color.lower())
-            swatch.style().unpolish(swatch)
-            swatch.style().polish(swatch)
+            swatch.set_active(hex_.lower() == hex_color.lower())
 
     # ----- internal -------------------------------------------------------
 
@@ -289,22 +302,22 @@ class HoverBar(QWidget):
         root.addWidget(col_label)
         self._expanded_widgets.append(col_label)
 
+        # Color swatches as MINI ARROWS (not circles - the user
+        # specifically asked: show an arrow of that color, so they
+        # know what the spring arrow will look like before clicking).
+        # No spacing between cells and stretch=1 on each cell makes
+        # the four swatches span the entire row equally.
         colors_row = QHBoxLayout()
-        colors_row.setSpacing(8)
+        colors_row.setSpacing(6)
         colors_row.setContentsMargins(0, 0, 0, 0)
         colors_wrap = QFrame()
         colors_wrap.setLayout(colors_row)
-        self._color_buttons: dict[str, QPushButton] = {}
+        self._color_buttons: dict[str, "ColorArrowSwatch"] = {}
         for name, hex_ in ARROW_COLORS:
-            b = QPushButton("")
-            b.setObjectName("Swatch")
-            b.setToolTip(name)
-            b.setStyleSheet(f"#Swatch {{ background: {hex_}; }}")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda _checked=False, h=hex_: self._on_color_pick(h))
-            self._color_buttons[hex_] = b
-            colors_row.addWidget(b)
-        colors_row.addStretch()
+            sw = ColorArrowSwatch(name=name, hex_color=hex_)
+            sw.clicked.connect(lambda h=hex_: self._on_color_pick(h))
+            self._color_buttons[hex_] = sw
+            colors_row.addWidget(sw, 1)   # stretch=1: equal-width cells
         root.addWidget(colors_wrap)
         self._expanded_widgets.append(colors_wrap)
 
@@ -402,4 +415,111 @@ class _PulseDot(QWidget):
         p.drawEllipse(QPoint(int(cx), int(cy)), 7, 7)
         p.setBrush(QBrush(core))
         p.drawEllipse(QPoint(int(cx), int(cy)), 4, 4)
+        p.end()
+
+
+class ColorArrowSwatch(QWidget):
+    """Color picker cell - draws a mini version of the spring arrow in
+    the swatch color so the user sees exactly what they'll be choosing.
+
+    Hover gives a soft background highlight; active (currently-selected)
+    state draws a darker rounded ring around the cell. Click emits the
+    `clicked` signal so the layout above can route it like a normal
+    button.
+    """
+
+    clicked = pyqtSignal()
+
+    def __init__(self, name: str, hex_color: str) -> None:
+        super().__init__(None)
+        self._name = name
+        self._hex = hex_color
+        self._color = QColor(hex_color)
+        self._hover = False
+        self._active = False
+        self.setMinimumHeight(46)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
+        self.setToolTip(name)
+
+    def set_active(self, active: bool) -> None:
+        if active == self._active:
+            return
+        self._active = active
+        self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Background cell - softer on hover, distinct ring when active.
+        bg = QColor(0, 0, 0, 0)
+        if self._hover:
+            bg = QColor(31, 27, 22, 18)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(bg))
+        p.drawRoundedRect(0, 0, w - 1, h - 1, 8, 8)
+
+        if self._active:
+            pen = QPen(QColor(31, 27, 22, 200), 2)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(1, 1, w - 3, h - 3, 8, 8)
+
+        # Mini aura + arrow head, centered in the cell. Same shape as
+        # the live spring arrow so the user has zero ambiguity about
+        # what each color looks like in flight.
+        cx, cy = w / 2, h / 2
+        head = QPointF(cx, cy + 2)
+
+        aura_r = 14
+        grad = QRadialGradient(head, aura_r)
+        c0 = QColor(self._color); c0.setAlpha(190)
+        c1 = QColor(self._color); c1.setAlpha(110)
+        c2 = QColor(self._color); c2.setAlpha(45)
+        c3 = QColor(self._color); c3.setAlpha(0)
+        grad.setColorAt(0.00, c0)
+        grad.setColorAt(0.40, c1)
+        grad.setColorAt(0.75, c2)
+        grad.setColorAt(1.00, c3)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawEllipse(head, aura_r, aura_r)
+
+        # Arrowhead - point up-left, same as the real spring arrow,
+        # but smaller so the cell stays compact.
+        p.save()
+        p.translate(head)
+        p.rotate(-45)   # -45 deg = arrow pointing up-left
+        tri = QPolygonF([
+            QPointF(0, -7),
+            QPointF(5.5, 5),
+            QPointF(0, 2.5),
+            QPointF(-5.5, 5),
+        ])
+        # Slight white-lift for the "glowing" look that matches the
+        # spring arrow's _draw_arrow().
+        c = QColor(self._color)
+        r = min(255, c.red() + 22)
+        g = min(255, c.green() + 22)
+        b = min(255, c.blue() + 22)
+        p.setBrush(QBrush(QColor(r, g, b, 255)))
+        p.drawPolygon(tri)
+        p.restore()
         p.end()
