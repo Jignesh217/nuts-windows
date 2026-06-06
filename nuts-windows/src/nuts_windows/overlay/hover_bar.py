@@ -237,6 +237,12 @@ class HoverBar(QWidget):
             "QPushButton:hover { background: #f5efde; border-color: #d9d0b8; }"
             "QPushButton#Quit { color: #8a3030; }"
             "QPushButton#Quit:hover { background: #fae5e5; border-color: #e7c4c4; }"
+            # Gear: tight icon-only square, no border by default so it
+            # blends into the bar; on hover the cream tint reveals it's
+            # clickable. Cog character is centered with line-height 1.
+            "QPushButton#Gear { background: transparent; border: 1px solid transparent; "
+            "  border-radius: 11px; padding: 0; color: #6b6357; font-size: 14px; }"
+            "QPushButton#Gear:hover { background: #f0e8d2; color: #1f1b16; border-color: #ebe3cf; }"
             "QFrame#Sep { background: #ebe3cf; max-height: 1px; }"
             "QPushButton#Swatch { border-radius: 13px; min-width: 26px; max-width: 26px; "
             "  min-height: 26px; max-height: 26px; border: 2px solid rgba(0,0,0,0.06); }"
@@ -247,7 +253,10 @@ class HoverBar(QWidget):
         root.setContentsMargins(12, 6, 12, 6)
         root.setSpacing(8)
 
-        # Row 1: ALWAYS visible. The "bar" itself.
+        # Row 1: ALWAYS visible. The "bar" itself - dot, brand, status
+        # pill, then a tiny gear at the far right. The gear is intentionally
+        # icon-only (no label) per user feedback - the bar is too narrow
+        # for text, and the user knows the cog universally means "settings".
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self._status_dot = _PulseDot(self)
@@ -259,6 +268,13 @@ class HoverBar(QWidget):
         self._status_label = QLabel("IDLE")
         self._status_label.setObjectName("StatusIdle")
         bar.addWidget(self._status_label)
+        gear = QPushButton("⚙")
+        gear.setObjectName("Gear")
+        gear.setToolTip("Settings — pick provider & paste API key")
+        gear.setCursor(Qt.CursorShape.PointingHandCursor)
+        gear.setFixedSize(22, 22)
+        gear.clicked.connect(lambda: self.settings_requested.emit())
+        bar.addWidget(gear)
         root.addLayout(bar)
 
         # ----- Expanded content - hidden by default ---------------------
@@ -326,21 +342,15 @@ class HoverBar(QWidget):
         btns = QHBoxLayout()
         btns.setSpacing(8)
         btns_wrap = QFrame(); btns_wrap.setLayout(btns)
-        # Gear / Settings - opens the API-key + provider drawer.
-        # Sits at the FAR LEFT of the button row so it's visually
-        # grouped with "config", with Sign out / Quit on the right
-        # for "danger" actions.
-        settings_btn = QPushButton("⚙  Settings")
-        settings_btn.setToolTip("Choose brain provider, paste API key")
-        settings_btn.clicked.connect(lambda: self.settings_requested.emit())
-        btns.addWidget(settings_btn)
+        # Settings moved to the top-right gear icon (per user request) -
+        # the bottom row is back to the original three actions.
         dash = QPushButton("Dashboard")
         dash.clicked.connect(lambda: self.open_dashboard_requested.emit())
         btns.addWidget(dash)
-        btns.addStretch()
         signout = QPushButton("Sign out")
         signout.clicked.connect(lambda: self.signout_requested.emit())
         btns.addWidget(signout)
+        btns.addStretch()
         quit_btn = QPushButton("Quit")
         quit_btn.setObjectName("Quit")
         quit_btn.clicked.connect(lambda: self.quit_requested.emit())
