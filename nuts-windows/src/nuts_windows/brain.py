@@ -280,6 +280,112 @@ class AnthropicBrain:
 
 
 # ---------------------------------------------------------------------------
+# OpenAI-compatible brain (Grok / OpenAI / custom).
+# ---------------------------------------------------------------------------
+#
+# xAI Grok and OpenAI both speak the same /v1/chat/completions shape, so a
+# single client handles them just by swapping base URL + model id.
+# Custom self-hosted endpoints (like akhrots.com if it exposes a
+# chat-completions surface someday) also drop right in.
+
+PROVIDER_DEFAULTS = {
+    "grok": {
+        "base_url": "https://api.x.ai/v1",
+        "model": "grok-2-vision-1212",   # vision-capable; required for screen grounding
+        "vision": True,
+    },
+    "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",          # cheaper than gpt-4o; supports vision
+        "vision": True,
+    },
+}
+
+
+class OpenAICompatibleBrain:
+    """Streaming chat-completions client. Works with Grok, OpenAI, or any
+    drop-in compatible endpoint (custom: pass your own base_url + model).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        base_url: str,
+        model: str,
+        supports_vision: bool = True,
+        max_tokens: int = 400,
+    ) -> None:
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._supports_vision = supports_vision
+        self._max_tokens = max_tokens
+
+    async def stream(self, ctx: BrainContext) -> AsyncIterator[str]:
+        import base64, json as _json
+        import httpx
+
+        # Build the user message. Vision-capable models accept a content
+        # ARRAY mixing text and image_url parts. Text-only models get
+        # plain string content + a note that we can't see the screen.
+        if self._supports_vision and ctx.screenshot_jpeg:
+            b64 = base64.b64encode(ctx.screenshot_jpeg).decode("ascii")
+            user_content = [
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}",
+                }},
+                {"type": "text", "text": ctx.transcript or "What do you see?"},
+            ]
+        else:
+            user_content = ctx.transcript or "What do you see?"
+
+        body = {
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST", f"{self._base_url}/chat/completions",
+                json=body, headers=headers,
+            ) as resp:
+                resp.raise_for_status()
+                buf = ""
+                async for raw in resp.aiter_text():
+                    buf += raw
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        line = line.rstrip("\r")
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if not payload or payload == "[DONE]":
+                            continue
+                        try:
+                            evt = _json.loads(payload)
+                        except Exception:
+                            continue
+                        # OpenAI-style streaming: choices[0].delta.content
+                        try:
+                            text = evt["choices"][0]["delta"].get("content")
+                        except (KeyError, IndexError, TypeError):
+                            continue
+                        if text:
+                            yield text
+
+
+# ---------------------------------------------------------------------------
 # Selection helper.
 # ---------------------------------------------------------------------------
 
@@ -287,45 +393,72 @@ class AnthropicBrain:
 def pick_brain(worker_url: Optional[str], token: Optional[str]) -> Brain:
     """Return whichever brain matches the current config.
 
-    Selection priority (highest first):
-      1. NUTS_BRAIN env override
-      2. ANTHROPIC_API_KEY -> AnthropicBrain (production default)
-      3. worker_url ending in /respond + token -> WorkerBrain
-      4. fallback -> DemoBrain
+    Priority order:
+      1. NUTS_BRAIN env override (demo / anthropic / grok / openai / worker)
+      2. Persisted brain settings from the in-app Settings dialog
+      3. ANTHROPIC_API_KEY env back-compat
+      4. Worker URL fallback
+      5. DemoBrain (last resort - offline rules)
     """
     import logging
     log = logging.getLogger("nuts.brain")
 
+    # Load persisted settings from keyring (set via in-app Settings dialog).
+    from nuts_windows import config as _config
+    settings = _config.load_brain_settings()
+    log.info("brain settings: provider=%s configured=%s",
+             settings.provider, settings.is_configured)
+
     forced = (os.environ.get("NUTS_BRAIN") or "").lower()
-    anth_key = (
-        os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("NUTS_ANTHROPIC_KEY")
-    )
 
-    if forced == "demo":
-        log.info("brain: forced DemoBrain via NUTS_BRAIN=demo")
+    # 1. Env-var override takes precedence.
+    if forced:
+        provider = forced
+    else:
+        provider = settings.provider
+
+    # 2. Resolve.
+    if provider == "demo":
+        log.info("brain: DemoBrain (offline, no key required)")
         return DemoBrain()
-    if forced == "anthropic":
-        if not anth_key:
-            log.warning("NUTS_BRAIN=anthropic but no key found - falling back to DemoBrain")
+
+    if provider == "anthropic":
+        key = settings.api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("NUTS_ANTHROPIC_KEY")
+        if not key:
+            log.warning("provider=anthropic but no API key - falling back to DemoBrain")
             return DemoBrain()
-        log.info("brain: forced AnthropicBrain via NUTS_BRAIN=anthropic")
-        return AnthropicBrain(anth_key)
-    if forced == "worker" and worker_url:
+        log.info("brain: AnthropicBrain (live)")
+        return AnthropicBrain(key)
+
+    if provider in ("grok", "openai"):
+        key = settings.api_key
+        if not key:
+            log.warning("provider=%s but no API key - falling back to DemoBrain", provider)
+            return DemoBrain()
+        defaults = PROVIDER_DEFAULTS[provider]
+        base_url = settings.base_url or defaults["base_url"]
+        model = settings.model or defaults["model"]
+        log.info("brain: OpenAICompatibleBrain provider=%s model=%s base=%s",
+                 provider, model, base_url)
+        return OpenAICompatibleBrain(
+            api_key=key, base_url=base_url, model=model,
+            supports_vision=defaults.get("vision", True),
+        )
+
+    if provider == "custom":
+        key = settings.api_key
+        base = settings.base_url
+        if not (key and base):
+            log.warning("provider=custom needs both key and base_url - falling back to DemoBrain")
+            return DemoBrain()
+        model = settings.model or "gpt-4o-mini"
+        log.info("brain: OpenAICompatibleBrain CUSTOM model=%s base=%s", model, base)
+        return OpenAICompatibleBrain(api_key=key, base_url=base, model=model)
+
+    if provider == "worker" and worker_url:
         from nuts_windows.transport.worker import WorkerClient
-        log.info("brain: forced WorkerBrain via NUTS_BRAIN=worker")
+        log.info("brain: WorkerBrain")
         return WorkerBrain(WorkerClient(worker_url, token))
 
-    # Auto-select. Anthropic is the production default if a key is set.
-    if anth_key:
-        log.info("brain: auto-selected AnthropicBrain (ANTHROPIC_API_KEY set)")
-        return AnthropicBrain(anth_key)
-    # akhrots.com/mcp is the JSON-RPC MCP server, NOT a /respond SSE endpoint.
-    # If the worker URL is the MCP one, fall through to demo. Real worker
-    # endpoints (with /respond) get WorkerBrain.
-    if worker_url and not worker_url.endswith(("/mcp",)):
-        from nuts_windows.transport.worker import WorkerClient
-        log.info("brain: auto-selected WorkerBrain (non-MCP worker URL)")
-        return WorkerBrain(WorkerClient(worker_url, token))
-    log.info("brain: falling back to DemoBrain (no API key, no worker URL)")
+    log.info("brain: provider=%s unknown - DemoBrain", provider)
     return DemoBrain()

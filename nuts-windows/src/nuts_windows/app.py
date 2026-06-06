@@ -125,6 +125,7 @@ class Application(QObject):
         self._panel.signout_requested.connect(self._handle_signout)
         self._panel.open_dashboard_requested.connect(self._open_dashboard)
         self._panel.color_chosen.connect(self._on_color_chosen)
+        self._panel.settings_requested.connect(self._open_settings)
         self._panel.show_()
         self._panel.set_state(STATE_IDLE)
         # Used by every legacy line that called self._persistent_badge -
@@ -145,9 +146,13 @@ class Application(QObject):
         # constructed so the call lands on the live widget.
         brain_name = type(self._brain).__name__
         if brain_name == "DemoBrain":
-            self._panel.set_signin("DEMO mode — set ANTHROPIC_API_KEY for real Claude")
+            self._panel.set_signin("DEMO mode — open Settings to add an API key")
         elif brain_name == "AnthropicBrain":
             self._panel.set_signin("Claude vision (Anthropic) — live")
+        elif brain_name == "OpenAICompatibleBrain":
+            from nuts_windows import config as _cfg
+            s = _cfg.load_brain_settings()
+            self._panel.set_signin(f"{s.provider.capitalize()} — live")
         elif brain_name == "WorkerBrain":
             self._panel.set_signin("Worker proxy — live")
         # Pre-load Whisper in the background so the FIRST push-to-talk
@@ -241,6 +246,34 @@ class Application(QObject):
         config.clear_credentials()
         self._cfg = config.load()
         self._sync_panel_state()
+
+    def _open_settings(self) -> None:
+        """Lazily build the settings dialog so we don't pay the QWidget
+        startup cost until the user actually clicks the gear."""
+        if not hasattr(self, "_settings_dialog") or self._settings_dialog is None:
+            from nuts_windows.overlay.settings_dialog import SettingsDialog
+            self._settings_dialog = SettingsDialog()
+            self._settings_dialog.saved.connect(self._reload_brain)
+        self._settings_dialog.show_centered()
+
+    def _reload_brain(self) -> None:
+        """Called after the user saves new brain settings - swap to a
+        fresh brain instance and update the sign-in line so the user
+        sees confirmation."""
+        wlog = __import__("logging").getLogger("nuts.brain")
+        self._brain = pick_brain(self._cfg.worker_url, self._cfg.token)
+        brain_name = type(self._brain).__name__
+        wlog.info("brain reloaded -> %s", brain_name)
+        if brain_name == "DemoBrain":
+            self._panel.set_signin("DEMO mode — open Settings to add an API key")
+        elif brain_name == "AnthropicBrain":
+            self._panel.set_signin("Claude vision (Anthropic) — live")
+        elif brain_name == "OpenAICompatibleBrain":
+            from nuts_windows import config as _cfg
+            s = _cfg.load_brain_settings()
+            self._panel.set_signin(f"{s.provider.capitalize()} — live")
+        elif brain_name == "WorkerBrain":
+            self._panel.set_signin("Worker proxy — live")
 
     def _on_color_chosen(self, hex_color: str) -> None:
         """User picked a swatch in the HoverBar - apply + persist."""

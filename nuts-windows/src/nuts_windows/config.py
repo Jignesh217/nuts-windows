@@ -28,6 +28,10 @@ SERVICE = "com.akhrots.nuts"
 ACCOUNT_TOKEN = "mcp-bearer"
 ACCOUNT_URL = "worker-url"
 ACCOUNT_ARROW_COLOR = "arrow-color"
+ACCOUNT_BRAIN_PROVIDER = "brain-provider"   # 'demo' / 'anthropic' / 'grok' / 'openai' / 'custom'
+ACCOUNT_BRAIN_API_KEY = "brain-api-key"     # the actual secret, in Windows Cred Mgr
+ACCOUNT_BRAIN_BASE_URL = "brain-base-url"   # for 'custom' provider
+ACCOUNT_BRAIN_MODEL = "brain-model"         # override model id (optional)
 
 DEFAULT_WORKER_URL = "https://akhrots.com/mcp"
 DEFAULT_HOTKEY = "<ctrl>+<alt>"   # pynput-style notation
@@ -70,6 +74,65 @@ def load() -> Config:
 def save_arrow_color(hex_color: str) -> None:
     """Persist the user's arrow-color pick so it survives restarts."""
     keyring.set_password(SERVICE, ACCOUNT_ARROW_COLOR, hex_color)
+
+
+# ---------------------------------------------------------------------------
+# Brain provider configuration (settings dialog persistence)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class BrainSettings:
+    provider: str             # 'demo' / 'anthropic' / 'grok' / 'openai' / 'custom'
+    api_key: Optional[str]
+    base_url: Optional[str]   # only used for 'custom'
+    model: Optional[str]      # optional model override
+
+    @property
+    def is_configured(self) -> bool:
+        if self.provider == "demo":
+            return True
+        return bool(self.api_key)
+
+
+def load_brain_settings() -> BrainSettings:
+    """Read brain provider config from keyring (and ANTHROPIC_API_KEY env
+    var as a back-compat fallback so existing setups keep working)."""
+    provider = keyring.get_password(SERVICE, ACCOUNT_BRAIN_PROVIDER) or "demo"
+    api_key = keyring.get_password(SERVICE, ACCOUNT_BRAIN_API_KEY)
+    base_url = keyring.get_password(SERVICE, ACCOUNT_BRAIN_BASE_URL)
+    model = keyring.get_password(SERVICE, ACCOUNT_BRAIN_MODEL)
+    # If nothing stored but ANTHROPIC_API_KEY is in env, surface it.
+    if not api_key and provider == "demo":
+        anth = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("NUTS_ANTHROPIC_KEY")
+        if anth:
+            provider = "anthropic"
+            api_key = anth
+    return BrainSettings(
+        provider=provider, api_key=api_key, base_url=base_url, model=model,
+    )
+
+
+def save_brain_settings(settings: BrainSettings) -> None:
+    """Persist brain config so the user doesn't re-enter keys at every launch."""
+    keyring.set_password(SERVICE, ACCOUNT_BRAIN_PROVIDER, settings.provider)
+    if settings.api_key:
+        keyring.set_password(SERVICE, ACCOUNT_BRAIN_API_KEY, settings.api_key)
+    else:
+        try:
+            keyring.delete_password(SERVICE, ACCOUNT_BRAIN_API_KEY)
+        except Exception:
+            pass
+    for account, value in (
+        (ACCOUNT_BRAIN_BASE_URL, settings.base_url),
+        (ACCOUNT_BRAIN_MODEL, settings.model),
+    ):
+        if value:
+            keyring.set_password(SERVICE, account, value)
+        else:
+            try:
+                keyring.delete_password(SERVICE, account)
+            except Exception:
+                pass
 
 
 def save_credentials(url: str, token: str) -> None:

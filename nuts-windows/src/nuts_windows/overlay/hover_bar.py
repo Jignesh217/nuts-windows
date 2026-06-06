@@ -107,6 +107,7 @@ class HoverBar(QWidget):
     open_dashboard_requested = pyqtSignal()
     color_chosen = pyqtSignal(str)   # hex string, e.g. "#ff8c8c"
     test_arrow_requested = pyqtSignal()
+    settings_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -325,13 +326,21 @@ class HoverBar(QWidget):
         btns = QHBoxLayout()
         btns.setSpacing(8)
         btns_wrap = QFrame(); btns_wrap.setLayout(btns)
+        # Gear / Settings - opens the API-key + provider drawer.
+        # Sits at the FAR LEFT of the button row so it's visually
+        # grouped with "config", with Sign out / Quit on the right
+        # for "danger" actions.
+        settings_btn = QPushButton("⚙  Settings")
+        settings_btn.setToolTip("Choose brain provider, paste API key")
+        settings_btn.clicked.connect(lambda: self.settings_requested.emit())
+        btns.addWidget(settings_btn)
         dash = QPushButton("Dashboard")
         dash.clicked.connect(lambda: self.open_dashboard_requested.emit())
         btns.addWidget(dash)
+        btns.addStretch()
         signout = QPushButton("Sign out")
         signout.clicked.connect(lambda: self.signout_requested.emit())
         btns.addWidget(signout)
-        btns.addStretch()
         quit_btn = QPushButton("Quit")
         quit_btn.setObjectName("Quit")
         quit_btn.clicked.connect(lambda: self.quit_requested.emit())
