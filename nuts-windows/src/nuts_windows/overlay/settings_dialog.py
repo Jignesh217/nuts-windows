@@ -98,56 +98,94 @@ class SettingsDialog(QWidget):
         self._card.setGraphicsEffect(shadow)
         outer.addWidget(self._card)
 
-        # All styling lives here. Use proper typography hierarchy:
-        #   Title 22pt 700, Sub 13pt 500, FieldLabel 12pt 600 uppercase,
-        #   Help 11pt 500. Inputs are 14pt with bigger padding for breath.
+        # ---- Typography ----
+        # Font family chain prefers Win11's "Segoe UI Variable" optical
+        # sizes (Display for headings, Text for body) and gracefully
+        # falls back to plain Segoe UI on Win10 / older. Variable
+        # fonts give us much cleaner small-size rendering and finer
+        # weight control. SF Pro Display is the macOS fallback even
+        # though we're Windows-only (helps in dev on a Mac).
+        head_family = ('"Segoe UI Variable Display", "Segoe UI Variable", '
+                       '"Segoe UI", "SF Pro Display", system-ui, sans-serif')
+        body_family = ('"Segoe UI Variable Text", "Segoe UI Variable", '
+                       '"Segoe UI", "SF Pro Text", system-ui, sans-serif')
+        mono_family = ('"Cascadia Code", "Cascadia Mono", "Consolas", '
+                       '"SF Mono", monospace')
+
         self._card.setStyleSheet(
             # Card
             "QFrame#SettingsCard { background: #fdfaf1; border-radius: 16px; }"
-            # Typography
-            "QLabel { color: #1f1b16; font-family: 'Segoe UI'; }"
-            "QLabel#Title { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; }"
-            "QLabel#Sub { color: #6b6357; font-size: 13px; }"
-            "QLabel#FieldLabel { color: #1f1b16; font-size: 11px; font-weight: 700; "
-            "  letter-spacing: 0.8px; }"
-            "QLabel#Help { color: #6b6357; font-size: 11px; font-weight: 500; }"
-            "QLabel#StatusOk { color: #155932; background: #d8efe0; "
-            "  padding: 9px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; }"
-            "QLabel#StatusErr { color: #7a2424; background: #f5d5d5; "
-            "  padding: 9px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; }"
-            # Inputs
-            "QLineEdit, QComboBox { color: #1f1b16; background: #ffffff; "
-            "  border: 1.5px solid #e3d8b5; border-radius: 10px; padding: 11px 14px; "
-            "  font-family: 'Segoe UI'; font-size: 14px; selection-background-color: #ebe3cf; }"
-            "QLineEdit:focus, QComboBox:focus { border-color: #2f7a4f; }"
-            "QLineEdit::placeholder { color: #a59a83; }"
-            "QComboBox::drop-down { width: 28px; border: 0; }"
-            "QComboBox::down-arrow { width: 10px; height: 10px; }"
-            "QComboBox QAbstractItemView { background: #ffffff; "
-            "  border: 1px solid #ebe3cf; border-radius: 8px; "
-            "  selection-background-color: #f5efde; "
-            "  selection-color: #1f1b16; outline: 0; padding: 4px; }"
-            # Buttons
-            "QPushButton { color: #1f1b16; background: #ffffff; "
-            "  border: 1.5px solid #e3d8b5; border-radius: 10px; "
-            "  padding: 10px 18px; font-family: 'Segoe UI'; font-size: 13px; "
+            # Default label = body
+            f"QLabel {{ color: #1f1b16; font-family: {body_family}; font-size: 13px; }}"
+            # TITLE - display family, large, tight tracking
+            f"QLabel#Title {{ font-family: {head_family}; font-size: 24px; "
+            "  font-weight: 600; letter-spacing: -0.6px; line-height: 28px; }"
+            # SUB - body family, medium grey, comfortable size
+            "QLabel#Sub { color: #756a58; font-size: 13.5px; font-weight: 400; "
+            "  line-height: 19px; }"
+            # FIELD LABEL - small caps, slightly muted, looser tracking
+            # so it reads as a section header not a shouting line
+            "QLabel#FieldLabel { color: #4b4434; font-size: 10.5px; "
+            "  font-weight: 600; letter-spacing: 1.4px; }"
+            # HELP text inside the info card
+            "QLabel#Help { color: #6b6357; font-size: 12.5px; "
+            "  font-weight: 400; line-height: 17px; }"
+            # Status pills - body family
+            "QLabel#StatusOk { color: #155932; background: #dceee2; "
+            "  padding: 10px 14px; border-radius: 9px; font-size: 12.5px; "
             "  font-weight: 600; }"
+            "QLabel#StatusErr { color: #7a2424; background: #f5d5d5; "
+            "  padding: 10px 14px; border-radius: 9px; font-size: 12.5px; "
+            "  font-weight: 600; }"
+            # Inputs - body family, slightly looser line for vertical rhythm
+            f"QLineEdit, QComboBox {{ color: #1f1b16; background: #ffffff; "
+            "  border: 1.5px solid #e3d8b5; border-radius: 10px; "
+            "  padding: 11px 14px; "
+            f"  font-family: {body_family}; font-size: 13.5px; font-weight: 400; "
+            "  selection-background-color: #ebe3cf; }"
+            "QLineEdit:focus, QComboBox:focus { border-color: #2f7a4f; }"
+            "QLineEdit::placeholder { color: #a59a83; font-style: italic; }"
+            # API keys are mono - read-friendly for long opaque strings
+            f"QLineEdit#KeyInput {{ font-family: {mono_family}; "
+            "  font-size: 12.5px; letter-spacing: 0.2px; }"
+            "QComboBox::drop-down { width: 30px; border: 0; }"
+            "QComboBox::down-arrow { width: 11px; height: 11px; }"
+            "QComboBox QAbstractItemView { background: #ffffff; "
+            "  border: 1px solid #ebe3cf; border-radius: 10px; "
+            f"  font-family: {body_family}; font-size: 13.5px; "
+            "  selection-background-color: #f5efde; "
+            "  selection-color: #1f1b16; outline: 0; padding: 6px; }"
+            "QComboBox QAbstractItemView::item { padding: 9px 12px; border-radius: 6px; }"
+            # Buttons - body family
+            f"QPushButton {{ color: #1f1b16; background: #ffffff; "
+            "  border: 1.5px solid #e3d8b5; border-radius: 10px; "
+            "  padding: 10px 20px; "
+            f"  font-family: {body_family}; font-size: 13px; font-weight: 600; "
+            "  letter-spacing: 0.1px; }"
             "QPushButton:hover { background: #f5efde; border-color: #c9bd96; }"
             "QPushButton:pressed { background: #ebe3cf; }"
             # Primary (Save) - dark green pill, the most prominent CTA
             "QPushButton#Primary { color: #ffffff; background: #2f7a4f; "
-            "  border-color: #246238; padding: 11px 24px; font-size: 14px; }"
+            "  border-color: #246238; padding: 11px 26px; "
+            "  font-size: 13.5px; font-weight: 600; }"
             "QPushButton#Primary:hover { background: #266a43; }"
             "QPushButton#Primary:pressed { background: #1f5a39; }"
-            # Ghost link buttons (Get free key + Close)
-            "QPushButton#Link { color: #2f7a4f; background: transparent; "
-            "  border: 0; font-weight: 700; text-align: left; padding: 6px 0; }"
+            # Show / Hide pill for the API key
+            "QPushButton#Toggle { border-color: #ebe3cf; "
+            "  font-size: 12px; font-weight: 600; }"
+            # Link buttons (Get a key)
+            f"QPushButton#Link {{ color: #2f7a4f; background: transparent; "
+            "  border: 0; "
+            f"  font-family: {body_family}; font-size: 12.5px; font-weight: 700; "
+            "  text-align: left; padding: 4px 0; letter-spacing: 0.1px; }"
             "QPushButton#Link:hover { color: #1f5a39; text-decoration: underline; }"
-            "QPushButton#Close { color: #6b6357; background: transparent; "
-            "  border: 0; font-size: 22px; font-weight: 500; padding: 0; }"
+            # Close X - quiet glyph that doesn't compete with the title
+            f"QPushButton#Close {{ color: #8a8273; background: transparent; "
+            f"  border: 0; font-family: {head_family}; font-size: 24px; "
+            "  font-weight: 300; padding: 0; }"
             "QPushButton#Close:hover { color: #1f1b16; }"
-            # Provider description card (subtle band below the dropdown)
-            "QFrame#ProviderInfo { background: #f5efde; border-radius: 10px; "
+            # Provider info band below the dropdown
+            "QFrame#ProviderInfo { background: #f5efde; border-radius: 12px; "
             "  border: 1px solid #ebe3cf; }"
         )
 
@@ -216,10 +254,12 @@ class SettingsDialog(QWidget):
         key_row = QHBoxLayout()
         key_row.setSpacing(8)
         self._key_input = QLineEdit()
+        self._key_input.setObjectName("KeyInput")
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_input.setPlaceholderText("Paste your provider key…")
         key_row.addWidget(self._key_input)
         self._show_btn = QPushButton("Show")
+        self._show_btn.setObjectName("Toggle")
         self._show_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._show_btn.setCheckable(True)
         self._show_btn.toggled.connect(self._toggle_key_visibility)
