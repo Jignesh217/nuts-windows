@@ -1,6 +1,6 @@
 # Nuts (Windows)
 
-Windows port of [atharvalepse/nuts](https://github.com/atharvalepse/nuts) — itself a fork of
+Windows port of [atharvalepse/nuts](https://github.com/Jignesh217/nuts) — itself a fork of
 [farzaa/clicky](https://github.com/farzaa/clicky) — rebuilt from scratch in Python + PyQt6
 because Swift only runs on macOS.
 
