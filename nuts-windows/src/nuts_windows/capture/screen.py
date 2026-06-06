@@ -42,9 +42,13 @@ def capture_all() -> Screenshot:
         # mss.grab returns BGRA; PIL wants RGB for JPEG.
         img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
         out = io.BytesIO()
-        # quality 80 is a strong default for screen content: small payload,
-        # crisp text. Bump to 90 if the vision model misreads UI labels.
-        img.save(out, format="JPEG", quality=80, optimize=True)
+        # quality 92 = small text in IDE / chat UIs reads crisp on the
+        # model side. Was 80 in v0.x; user reported the model giving
+        # generic 'a chat app is open' answers instead of recognising
+        # the actual content - turns out the JPEG was just too lossy
+        # for the model to read window titles + first-line headers.
+        # Payload still under ~300 KB at typical screen sizes.
+        img.save(out, format="JPEG", quality=92, optimize=True)
         return Screenshot(
             jpeg_bytes=out.getvalue(),
             width=union["width"],

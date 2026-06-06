@@ -457,6 +457,18 @@ class Application(QObject):
                     _t_log.info("brain chunk %d: %r", chunk_count, chunk[:120])
                     self._handle_chunk(chunk, snap.monitors)
                 _t_log.info("brain.stream END (%d chunks)", chunk_count)
+                # Zero-chunk safeguard: model accepted the request but
+                # returned nothing. Without this branch the panel just
+                # goes idle and the user has no idea what happened.
+                # Common causes: content filter, empty completion, model
+                # output got truncated to a single safety token.
+                if chunk_count == 0:
+                    msg = ("The model returned no text. This usually means a "
+                           "content filter blocked the response. Try a "
+                           "different phrasing.")
+                    panel.set_response(msg)
+                    speaker.speak("The model returned nothing. Try a different question.")
+                    speaker.flush()
             except Exception as e:
                 # The brain failed before producing any text. Without
                 # this branch the pipeline just goes silent ('idle') and

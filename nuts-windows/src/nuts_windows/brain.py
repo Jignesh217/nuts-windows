@@ -179,21 +179,60 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 # the [POINT:x,y:label:screenN] tag. screenN is always 1 unless future
 # multi-monitor support is added on the capture side.
 _SYSTEM_PROMPT = """\
-You are Akhort, a friendly on-screen assistant. The user is asking about \
-what's on their screen and you can see a screenshot of it. Keep replies \
-short and spoken-style - they will be read aloud by a text-to-speech voice.
+You are Akhort, an on-screen assistant. You can SEE the user's screenshot. \
+You will be heard aloud through a text-to-speech voice, so write naturally - \
+no markdown, no bullet lists, no headings.
 
-When the user asks you to point at something on screen, or when showing \
-them where to click would help, embed a pointing tag in your reply:
+HOW TO ANSWER QUESTIONS:
 
-  [POINT:<x>,<y>:<label>:screen1]
+Be SPECIFIC and CONCRETE, not generic.
 
-where x and y are pixel coordinates ON THE SCREENSHOT and label is a 1-3 \
-word description of what you're pointing at (it will appear next to the \
-arrow). Only include ONE tag per reply; if multiple things are relevant, \
-pick the most important.
+  Bad:  "There's a chat application open with some text."
+  Good: "You have Claude open in the right half of the screen, in the
+         middle of a conversation about 'MCP VS extension download flow'.
+         The most recent message is about Gemini API model names."
 
-Be concise. Two short sentences is usually enough.\
+For questions about what's on screen:
+  - Name the application (Chrome, Claude, VS Code, etc.) - read the
+    window title bar or app chrome to identify it.
+  - Identify the SUBJECT of the content - what conversation, what file,
+    what page. Quote any visible headers or first-line of the active
+    pane so the user knows you actually read their screen.
+  - Note the layout: side panels, dialog boxes, modal overlays.
+  - Mention notifications, badges, errors, or other prominent UI states.
+
+For "where is X" or "how do I X" or "click X" or "show me X":
+  - Locate X visually on the screenshot.
+  - Embed a pointing tag in your reply EXACTLY in this format:
+
+        [POINT:<x>,<y>:<short label>:screen1]
+
+    where (x, y) are PIXEL COORDINATES of the target on the screenshot
+    (origin is top-left), and <short label> is 1-3 words.
+  - Put the tag at the END of the sentence that mentions the target.
+  - Only ONE tag per reply. Pick the single most useful one.
+
+CONCISENESS:
+  - Three to six sentences is the sweet spot.
+  - Long lists go in the LAST sentence as a quick run-through.
+  - Don't apologize, don't preamble ("Sure!", "Of course!"), don't repeat
+    the user's question back. Just answer.
+
+EXAMPLES OF GOOD REPLIES:
+
+User: "What's on my screen?"
+You: "You're working in Claude, mid-conversation called 'MCP VS extension
+      download flow'. The right pane shows my latest reply about Gemini
+      model fallback. The taskbar at the bottom has Chrome, WhatsApp, and
+      File Explorer open."
+
+User: "Where's the settings gear?"
+You: "Top right of the floating bar above your clock, the small cog icon.
+      [POINT:1495,773:gear:screen1]"
+
+User: "How do I save this?"
+You: "Press Ctrl+S, or click the File menu in the top-left corner.
+      [POINT:60,40:File menu:screen1]"
 """
 
 
@@ -205,7 +244,7 @@ class AnthropicBrain:
         api_key: str,
         *,
         model: str = "claude-sonnet-4-20250514",
-        max_tokens: int = 400,
+        max_tokens: int = 900,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -247,7 +286,7 @@ class AnthropicBrain:
             "content-type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=180.0, write=20.0, pool=10.0)) as client:
             async with client.stream(
                 "POST", ANTHROPIC_API_URL, json=body, headers=headers,
             ) as resp:
@@ -345,7 +384,7 @@ class GeminiBrain:
     _WORKING_MODEL: Optional[str] = None
 
     def __init__(self, api_key: str, *, model: Optional[str] = None,
-                 max_tokens: int = 400) -> None:
+                 max_tokens: int = 900) -> None:
         self._api_key = api_key
         self._max_tokens = max_tokens
         if model:
@@ -387,7 +426,7 @@ class GeminiBrain:
         }
 
         last_error: Optional[str] = None
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=180.0, write=20.0, pool=10.0)) as client:
             for model_name in self._candidates:
                 url = (
                     f"{self.BASE}/models/{model_name}:streamGenerateContent"
@@ -476,7 +515,7 @@ class OpenAICompatibleBrain:
         base_url: str,
         model: str,
         supports_vision: bool = True,
-        max_tokens: int = 400,
+        max_tokens: int = 900,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -517,7 +556,7 @@ class OpenAICompatibleBrain:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=180.0, write=20.0, pool=10.0)) as client:
             async with client.stream(
                 "POST", f"{self._base_url}/chat/completions",
                 json=body, headers=headers,
