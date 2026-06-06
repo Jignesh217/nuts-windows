@@ -132,9 +132,13 @@ class ControlPanel(QWidget):
         return QCursor.pos()
 
     def _build_ui(self) -> None:
-        # We hand-roll styling to look opinionated rather than default-Qt
-        # bland. Matches the akhrots.com warm-cream brand from the
-        # dashboard so users feel they're using the same product.
+        # CRITICAL: setObjectName MUST come BEFORE setStyleSheet, otherwise
+        # the QWidget#ControlPanelRoot {...} rule never matches and the
+        # frameless window paints with nothing - looked invisible / broken
+        # in v0.1. Same ordering applies to every named child below.
+        self.setObjectName("ControlPanelRoot")
+        # We hand-roll styling to match the akhrots.com warm-cream brand
+        # from the dashboard so users feel they're using the same product.
         self.setStyleSheet(
             "QWidget#ControlPanelRoot { background: #faf5e8; border: 1px solid #ebe3cf; border-radius: 10px; }"
             "QLabel { color: #1f1b16; font-family: 'Segoe UI'; }"
@@ -149,7 +153,6 @@ class ControlPanel(QWidget):
             "QPushButton#Quit { color: #8a3030; }"
             "QFrame#Sep { background: #ebe3cf; max-height: 1px; }"
         )
-        self.setObjectName("ControlPanelRoot")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)

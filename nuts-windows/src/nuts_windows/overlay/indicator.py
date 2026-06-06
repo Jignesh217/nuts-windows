@@ -129,6 +129,91 @@ class CursorIndicator(_OverlayBase):
         p.end()
 
 
+class MicBadge(_OverlayBase):
+    """Top-center 'Listening...' pill with a pulsing microphone icon.
+
+    Why both this AND the cursor ring? The ring is glued to the cursor so
+    the user knows their hotkey worked, but a stationary always-on-screen
+    badge gives a SECOND, harder-to-miss signal that audio is being
+    recorded. Clicky on Mac shows a similar indicator in the menu bar
+    area; Windows has no menu bar, so we float it at the top of the
+    active screen instead.
+    """
+
+    WIDTH = 200
+    HEIGHT = 44
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.resize(self.WIDTH, self.HEIGHT)
+        self._pulse = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self) -> None:
+        QTimer.singleShot(0, self._start_impl)
+
+    def stop(self) -> None:
+        QTimer.singleShot(0, self._stop_impl)
+
+    def _start_impl(self) -> None:
+        # Position at top-center of whichever screen the cursor is on, so
+        # if the user is on a secondary monitor the badge follows them.
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        g = screen.availableGeometry()
+        x = g.left() + (g.width() - self.WIDTH) // 2
+        y = g.top() + 16
+        self.move(x, y)
+        self._pulse = 0.0
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def _stop_impl(self) -> None:
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self) -> None:
+        self._pulse = (self._pulse + 0.18) % (2 * math.pi)
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Background pill
+        pill = QPainterPath()
+        pill.addRoundedRect(QRectF(0, 0, self.WIDTH, self.HEIGHT), 22, 22)
+        p.fillPath(pill, QBrush(QColor(31, 27, 22, 235)))
+        # Mic icon - hand-drawn capsule + stand. Pulses with _pulse.
+        breath = 0.5 + 0.5 * math.sin(self._pulse)
+        cx, cy = 24, self.HEIGHT // 2
+        # Halo around the icon
+        halo = QColor(245, 215, 145, int(40 + 80 * breath))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(halo))
+        p.drawEllipse(QPointF(cx, cy), 17, 17)
+        # Mic capsule
+        p.setBrush(QBrush(_TAN))
+        p.drawRoundedRect(QRectF(cx - 5, cy - 10, 10, 16), 5, 5)
+        # Stand: arc + base
+        pen = QPen(_TAN); pen.setWidth(2)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawArc(QRectF(cx - 9, cy - 4, 18, 12), 0, -180 * 16)
+        p.setPen(QPen(_TAN, 2))
+        p.drawLine(int(cx), cy + 8, int(cx), cy + 12)
+        p.drawLine(int(cx) - 4, cy + 12, int(cx) + 4, cy + 12)
+        # Label
+        p.setPen(QColor(245, 215, 145, 240))
+        font = p.font(); font.setFamily("Segoe UI"); font.setPointSize(11); font.setBold(True)
+        p.setFont(font)
+        p.drawText(QRectF(46, 0, self.WIDTH - 56, self.HEIGHT),
+                   int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                   "Listening...")
+        p.end()
+
+
 class PointOverlay(_OverlayBase):
     """Full-screen click-through canvas that draws an animated arrow.
 

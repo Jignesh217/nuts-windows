@@ -36,7 +36,7 @@ from nuts_windows.capture.screen import capture_all
 from nuts_windows import memory as memory_mod
 from nuts_windows.hotkey import PushToTalk
 from nuts_windows.overlay import cursor as cursor_mod
-from nuts_windows.overlay.indicator import CursorIndicator, PointOverlay
+from nuts_windows.overlay.indicator import CursorIndicator, MicBadge, PointOverlay
 from nuts_windows.overlay.panel import ControlPanel
 from nuts_windows.memory import Memory
 from nuts_windows.transport.worker import WorkerClient, WorkerRequest
@@ -84,6 +84,7 @@ class Application:
             on_quit=self._quit,
         )
         self._cursor_indicator = CursorIndicator()
+        self._mic_badge = MicBadge()
         self._point_overlay = PointOverlay()
         # Memory: local on-disk JSONL store for "remember this" voice
         # commands. Loaded once, written incrementally. Lives in the
@@ -154,17 +155,20 @@ class Application:
         except Exception:
             self._last_screenshot = None
         self._recorder.start()
-        # Show the cursor ring so the user has visible feedback that the
-        # app heard the hotkey and is recording.
+        # Two visual signals for "recording": the ring glued to the cursor
+        # (immediate, hard to miss) and the mic badge floating top-center
+        # of the screen (explicit, label tells you exactly what's happening).
         self._cursor_indicator.start()
+        self._mic_badge.start()
         self._panel.set_status("Listening")
 
     def _end_turn(self) -> None:
         """Hotkey released: stop the mic, send to worker, stream response."""
-        # The cursor ring goes away the moment the user releases the
-        # hotkey, even if the recording was empty or the screenshot
-        # failed - the visual contract is "ring = listening".
+        # The cursor ring + mic badge go away the moment the user releases
+        # the hotkey, even if the recording was empty or the screenshot
+        # failed - the visual contract is "rings/badge = listening".
         self._cursor_indicator.stop()
+        self._mic_badge.stop()
         rec = self._recorder.stop()
         if rec is None or self._last_screenshot is None:
             self._panel.set_status("Idle")
