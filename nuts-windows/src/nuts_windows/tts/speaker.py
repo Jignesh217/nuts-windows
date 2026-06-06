@@ -14,10 +14,14 @@ presses push-to-talk again before the previous response finished.
 """
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 
 import pyttsx3
+
+
+_log = logging.getLogger("nuts.tts")
 
 
 _FLUSH = object()   # sentinel: drain remaining buffer immediately
@@ -53,6 +57,7 @@ class Speaker:
         prosody. Caller can stream many small chunks.
         """
         if text:
+            _log.info("speak() queued %d chars (qsize=%d)", len(text), self._q.qsize())
             self._q.put(text)
 
     def flush(self) -> None:
@@ -62,23 +67,30 @@ class Speaker:
         fragment (e.g. a final clause without a period) sits in the
         buffer forever and the user never hears it.
         """
+        _log.info("flush() requested")
         self._q.put(_FLUSH)
 
     def cancel(self) -> None:
-        """Interrupt any in-progress speech and drain the queue."""
-        self._cancel.set()
-        if self._engine is not None:
-            try:
-                self._engine.stop()
-            except Exception:
-                pass
-        # Drain pending utterances.
+        """Drop pending utterances WITHOUT calling engine.stop().
+
+        IMPORTANT - the v0.x cancel called self._engine.stop() to cut off
+        the currently-speaking sentence. That call has a longstanding
+        pyttsx3 + Windows SAPI bug: stop() during runAndWait() leaves
+        SAPI in a state where every subsequent say() returns instantly
+        without producing audio. Result: the FIRST voice turn spoke,
+        every turn after it queued text but the user heard silence.
+
+        New behavior: just discard everything queued. The current
+        sentence (already inside runAndWait) finishes naturally, then
+        the worker proceeds to the new turn's content. Adds at most
+        one stale sentence of audio - way better than silent forever.
+        """
+        _log.info("cancel() - draining queue (current sentence finishes)")
         try:
             while True:
                 self._q.get_nowait()
         except queue.Empty:
             pass
-        self._cancel.clear()
 
     def shutdown(self) -> None:
         self._q.put(None)
@@ -105,7 +117,7 @@ class Speaker:
             if item is _FLUSH:
                 # Speak whatever is left, sentence-end or not.
                 tail, buf = buf.strip(), ""
-                if tail and not self._cancel.is_set():
+                if tail:
                     self._say(tail)
                 continue
             buf += item   # type: ignore[operator]
@@ -116,18 +128,17 @@ class Speaker:
                 if end == -1:
                     break
                 sentence, buf = buf[: end + 1], buf[end + 1 :].lstrip()
-                if self._cancel.is_set():
-                    buf = ""
-                    break
                 self._say(sentence)
 
     def _say(self, text: str) -> None:
+        _log.info("_say speaking %d chars: %r", len(text), text[:80])
         try:
             self._engine.say(text)        # type: ignore[union-attr]
             self._engine.runAndWait()     # type: ignore[union-attr]
-        except Exception:
+            _log.info("_say done")
+        except Exception as e:
             # SAPI dropped - skip this utterance, keep the loop alive.
-            pass
+            _log.exception("_say FAILED: %s", e)
 
 
 def _sentence_end(s: str) -> int:
