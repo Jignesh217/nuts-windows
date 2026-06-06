@@ -136,11 +136,25 @@ class Application(QObject):
         # same %LOCALAPPDATA%\Akhort directory as the log file.
         self._memory = Memory()
         # Brain selection: DemoBrain (offline rules + spring-arrow
-        # responses) by default; WorkerBrain (real LLM via Cloudflare
-        # Worker) when NUTS_WORKER_URL points at a /respond SSE
-        # endpoint and NUTS_BRAIN isn't explicitly forced to 'demo'.
-        # See brain.py pick_brain() for the exact selection rules.
+        # responses) when no API key, AnthropicBrain (real Claude with
+        # vision) when an API key is configured. See brain.py
+        # pick_brain() for the exact selection rules.
         self._brain = pick_brain(self._cfg.worker_url, self._cfg.token)
+        # Show the brain in the panel so the user knows whether they're
+        # in demo mode or talking to a real LLM. Done after _panel is
+        # constructed so the call lands on the live widget.
+        brain_name = type(self._brain).__name__
+        if brain_name == "DemoBrain":
+            self._panel.set_signin("DEMO mode — set ANTHROPIC_API_KEY for real Claude")
+        elif brain_name == "AnthropicBrain":
+            self._panel.set_signin("Claude vision (Anthropic) — live")
+        elif brain_name == "WorkerBrain":
+            self._panel.set_signin("Worker proxy — live")
+        # Pre-load Whisper in the background so the FIRST push-to-talk
+        # turn doesn't pay the ~10s 'first call downloads the model'
+        # cost. Subsequent calls are then ~0.5-1.5s with the 'tiny'
+        # model + INT8 quantization.
+        threading.Thread(target=self._prewarm_whisper, daemon=True).start()
 
         self._tray = Tray(
             qt_app,
@@ -179,6 +193,19 @@ class Application(QObject):
     def _reload(self) -> None:
         bootstrap.try_auto_signin()
         self._cfg = config.load()
+
+    def _prewarm_whisper(self) -> None:
+        """Background-load the Whisper model so the first push-to-talk
+        turn doesn't take 10+ seconds for the model download / first
+        compile. Logged so we can see in Nuts.log when it's ready."""
+        wlog = __import__("logging").getLogger("nuts.whisper")
+        wlog.info("pre-warm START (background)")
+        try:
+            from nuts_windows.capture.audio import _whisper_init
+            m = _whisper_init()
+            wlog.info("pre-warm DONE (model=%s)", type(m).__name__ if m else "None")
+        except Exception as e:
+            wlog.exception("pre-warm FAILED: %s", e)
 
     def _demo_arrow(self) -> None:
         """Smoke-test: fire the spring arrow at a random spot on the

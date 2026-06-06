@@ -1,30 +1,32 @@
 """Pluggable 'brain' interface.
 
 Each brain takes a (transcript, screenshot, monitors) and yields response
-chunks plus optional [POINT:x,y] tags - same shape the existing
-``transport/worker.py`` SSE stream emits. The point of the abstraction:
-the rest of the app already knows how to handle a stream of chunks, so
-the brain can be a remote LLM, a local model, OR a fast offline rule
-table that just demonstrates the wiring.
+chunks plus optional [POINT:x,y] tags - same shape the rest of the app
+already knows how to handle.
 
-Today we ship two brains:
+Three brains ship today:
 
-  * ``DemoBrain``  - rule-based. Recognises common 'click', 'point at',
-    'look at', 'what is on screen' style commands and synthesises an
-    answer + a [POINT:x,y] tag pointing at a relevant area of the
-    screen. Lets the user verify voice -> STT -> response -> TTS -> arrow
-    works without an API key.
+  * ``DemoBrain`` - rule-based offline. Recognises common 'click',
+    'point at', 'where is X' commands and synthesises a reply +
+    [POINT:x,y] tag. Smoke-test mode for verifying STT -> arrow works
+    without an API key. 'Demo mode' that the user wants to leave.
 
-  * ``WorkerBrain`` - thin adapter over WorkerClient. Same streaming
-    interface but talks to a real Cloudflare Worker (the Anthropic
-    proxy at clicky's worker/index.ts shape). Use this once a worker URL
-    + bearer are configured.
+  * ``AnthropicBrain`` - REAL Claude with vision. Streams SSE chunks
+    from the Anthropic Messages API. Sees your screenshot, decides
+    where to point, talks back. This is production mode.
+    Requires ANTHROPIC_API_KEY env var or NUTS_ANTHROPIC_KEY.
 
-Selection happens in app.py based on env vars and config:
-  NUTS_BRAIN=demo            -> DemoBrain (default if worker URL missing)
-  NUTS_BRAIN=worker          -> WorkerBrain
-  unset, worker URL present  -> WorkerBrain
-  unset, worker URL absent   -> DemoBrain
+  * ``WorkerBrain`` - thin adapter over a Cloudflare Worker (clicky's
+    /respond SSE shape). Useful when you want to hide the API key on
+    a server and have multiple users share it.
+
+Selection happens in pick_brain():
+  NUTS_BRAIN=demo                  -> DemoBrain
+  NUTS_BRAIN=anthropic             -> AnthropicBrain
+  NUTS_BRAIN=worker + worker_url   -> WorkerBrain
+  unset, ANTHROPIC_API_KEY set     -> AnthropicBrain (production default)
+  unset, worker_url is /respond    -> WorkerBrain
+  unset, otherwise                 -> DemoBrain
 """
 from __future__ import annotations
 
@@ -167,27 +169,163 @@ class WorkerBrain:
 
 
 # ---------------------------------------------------------------------------
+# AnthropicBrain - production-mode real LLM.
+# ---------------------------------------------------------------------------
+
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+
+# System prompt mirrors clicky's CompanionManager.swift conventions: the
+# model knows it is an on-screen assistant and that pointing is done via
+# the [POINT:x,y:label:screenN] tag. screenN is always 1 unless future
+# multi-monitor support is added on the capture side.
+_SYSTEM_PROMPT = """\
+You are Akhort, a friendly on-screen assistant. The user is asking about \
+what's on their screen and you can see a screenshot of it. Keep replies \
+short and spoken-style - they will be read aloud by a text-to-speech voice.
+
+When the user asks you to point at something on screen, or when showing \
+them where to click would help, embed a pointing tag in your reply:
+
+  [POINT:<x>,<y>:<label>:screen1]
+
+where x and y are pixel coordinates ON THE SCREENSHOT and label is a 1-3 \
+word description of what you're pointing at (it will appear next to the \
+arrow). Only include ONE tag per reply; if multiple things are relevant, \
+pick the most important.
+
+Be concise. Two short sentences is usually enough.\
+"""
+
+
+class AnthropicBrain:
+    """Real Claude with vision. Streams SSE chunks via the Messages API."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "claude-sonnet-4-20250514",
+        max_tokens: int = 400,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._max_tokens = max_tokens
+
+    async def stream(self, ctx: BrainContext) -> AsyncIterator[str]:
+        import base64
+        import httpx
+
+        # Build the multimodal content block: screenshot first (Anthropic
+        # recommends image before text for best attention), then the
+        # transcribed prompt.
+        content = []
+        if ctx.screenshot_jpeg:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(ctx.screenshot_jpeg).decode("ascii"),
+                },
+            })
+        content.append({
+            "type": "text",
+            "text": ctx.transcript or "What do you see?",
+        })
+
+        body = {
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "system": _SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": content}],
+            "stream": True,
+        }
+
+        headers = {
+            "x-api-key": self._api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST", ANTHROPIC_API_URL, json=body, headers=headers,
+            ) as resp:
+                resp.raise_for_status()
+                # SSE parser: data: lines carry JSON event objects. We
+                # only care about content_block_delta with text_delta
+                # type - that's the per-token text stream.
+                buf = ""
+                async for raw in resp.aiter_text():
+                    buf += raw
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        line = line.rstrip("\r")
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if not payload or payload == "[DONE]":
+                            continue
+                        try:
+                            evt = __import__("json").loads(payload)
+                        except Exception:
+                            continue
+                        if evt.get("type") != "content_block_delta":
+                            continue
+                        delta = evt.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                yield text
+
+
+# ---------------------------------------------------------------------------
 # Selection helper.
 # ---------------------------------------------------------------------------
 
 
 def pick_brain(worker_url: Optional[str], token: Optional[str]) -> Brain:
-    """Return whichever brain matches the current config."""
+    """Return whichever brain matches the current config.
+
+    Selection priority (highest first):
+      1. NUTS_BRAIN env override
+      2. ANTHROPIC_API_KEY -> AnthropicBrain (production default)
+      3. worker_url ending in /respond + token -> WorkerBrain
+      4. fallback -> DemoBrain
+    """
+    import logging
+    log = logging.getLogger("nuts.brain")
+
     forced = (os.environ.get("NUTS_BRAIN") or "").lower()
+    anth_key = (
+        os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("NUTS_ANTHROPIC_KEY")
+    )
+
     if forced == "demo":
+        log.info("brain: forced DemoBrain via NUTS_BRAIN=demo")
         return DemoBrain()
+    if forced == "anthropic":
+        if not anth_key:
+            log.warning("NUTS_BRAIN=anthropic but no key found - falling back to DemoBrain")
+            return DemoBrain()
+        log.info("brain: forced AnthropicBrain via NUTS_BRAIN=anthropic")
+        return AnthropicBrain(anth_key)
     if forced == "worker" and worker_url:
         from nuts_windows.transport.worker import WorkerClient
+        log.info("brain: forced WorkerBrain via NUTS_BRAIN=worker")
         return WorkerBrain(WorkerClient(worker_url, token))
-    # Auto: prefer worker if URL is configured AND looks like a real /respond
-    # endpoint (clicky-style), else demo. Today we assume /respond is
-    # available when worker_url is set; if it isn't, the user gets clear
-    # transport errors which is fine for now.
-    if worker_url and worker_url.endswith(("/mcp",)):
-        # akhrots.com/mcp is the JSON-RPC MCP server, not a /respond SSE.
-        # Demo brain until a proper worker is wired up.
-        return DemoBrain()
-    if worker_url:
+
+    # Auto-select. Anthropic is the production default if a key is set.
+    if anth_key:
+        log.info("brain: auto-selected AnthropicBrain (ANTHROPIC_API_KEY set)")
+        return AnthropicBrain(anth_key)
+    # akhrots.com/mcp is the JSON-RPC MCP server, NOT a /respond SSE endpoint.
+    # If the worker URL is the MCP one, fall through to demo. Real worker
+    # endpoints (with /respond) get WorkerBrain.
+    if worker_url and not worker_url.endswith(("/mcp",)):
         from nuts_windows.transport.worker import WorkerClient
+        log.info("brain: auto-selected WorkerBrain (non-MCP worker URL)")
         return WorkerBrain(WorkerClient(worker_url, token))
+    log.info("brain: falling back to DemoBrain (no API key, no worker URL)")
     return DemoBrain()
