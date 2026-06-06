@@ -34,6 +34,7 @@ from nuts_windows import bootstrap, config
 from nuts_windows.capture.audio import Recorder, transcribe
 from nuts_windows.capture.screen import capture_all
 from nuts_windows import memory as memory_mod
+from nuts_windows.brain import BrainContext, pick_brain
 from nuts_windows.hotkey import PushToTalk
 from nuts_windows.overlay import cursor as cursor_mod
 from nuts_windows.overlay.indicator import CursorIndicator, MicBadge
@@ -117,6 +118,12 @@ class Application:
         # commands. Loaded once, written incrementally. Lives in the
         # same %LOCALAPPDATA%\Akhort directory as the log file.
         self._memory = Memory()
+        # Brain selection: DemoBrain (offline rules + spring-arrow
+        # responses) by default; WorkerBrain (real LLM via Cloudflare
+        # Worker) when NUTS_WORKER_URL points at a /respond SSE
+        # endpoint and NUTS_BRAIN isn't explicitly forced to 'demo'.
+        # See brain.py pick_brain() for the exact selection rules.
+        self._brain = pick_brain(self._cfg.worker_url, self._cfg.token)
 
         self._tray = Tray(
             qt_app,
@@ -289,17 +296,22 @@ class Application:
                     self._persistent_badge.set_state(STATE_IDLE)
                     return
 
-            req = WorkerRequest(
+            # 3. Hand the transcript + screenshot to whichever Brain is
+            #    selected. DemoBrain answers offline using rule patterns
+            #    (good enough to verify the whole loop without an API
+            #    key); WorkerBrain proxies to a real Cloudflare Worker
+            #    when one is configured. See brain.py pick_brain().
+            ctx = BrainContext(
+                transcript=transcript or "",
                 screenshot_jpeg=snap.jpeg_bytes,
-                audio_wav=rec.wav_bytes if not transcript else None,
-                transcript=transcript or None,
+                monitors=snap.monitors,
             )
             try:
-                async for chunk in client.stream_response(req):
+                async for chunk in self._brain.stream(ctx):
                     self._handle_chunk(chunk, snap.monitors)
             except Exception:
-                # The model dropped the connection or auth failed - swallow
-                # for the scaffold; later wire to a tray notification.
+                # Brain dropped / auth failed - swallow for the scaffold;
+                # later wire to a tray notification.
                 pass
             finally:
                 # Flush any text the speaker is still holding (a trailing
@@ -308,6 +320,7 @@ class Application:
                 speaker.flush()
                 # Stream finished - reset the status pill in the panel.
                 panel.set_status("Idle")
+                self._persistent_badge.set_state(STATE_IDLE)
 
         self._async.submit(go())
 

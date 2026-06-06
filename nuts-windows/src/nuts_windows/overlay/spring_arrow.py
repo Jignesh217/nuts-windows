@@ -59,6 +59,13 @@ class SpringArrow(QWidget):
     FRAME_MS = 16          # ~60 fps
     TRAIL_LEN = 18
     POINT_HOLD_MS = 2400   # how long a [POINT:x,y] target stays locked
+    # Offset from the cursor for the FOLLOW state, in screen pixels.
+    # The arrow trails to the upper-right of the cursor so it never sits
+    # directly under what the user is trying to click/read. When the
+    # model gives a [POINT:x,y] target, we drop the offset (the arrow
+    # should land ON the target, not next to it).
+    FOLLOW_OFFSET_X = 36
+    FOLLOW_OFFSET_Y = -36
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -126,9 +133,14 @@ class SpringArrow(QWidget):
         # Re-evaluate target each frame.
         now = time.time()
         if now > self._point_lock_until:
-            # Idle / listening: target = cursor
+            # Idle / listening: target = cursor PLUS the follow offset so
+            # the arrow trails off to the upper-right instead of sitting
+            # under whatever the user is reading or trying to click.
             c = QCursor.pos()
-            self._target = QPointF(c.x(), c.y())
+            self._target = QPointF(
+                c.x() + self.FOLLOW_OFFSET_X,
+                c.y() + self.FOLLOW_OFFSET_Y,
+            )
             if self._state == STATE_POINTING:
                 self._state = STATE_IDLE
                 self._point_label = ""
