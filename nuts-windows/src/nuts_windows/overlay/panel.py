@@ -19,6 +19,8 @@ them from anywhere.
 """
 from __future__ import annotations
 
+import logging
+
 from PyQt6.QtCore import Qt, QTimer, QPoint
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
@@ -29,6 +31,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QFrame,
 )
+
+_log = logging.getLogger("nuts.panel")
 
 
 class ControlPanel(QWidget):
@@ -43,23 +47,21 @@ class ControlPanel(QWidget):
         # via setQuitOnLastWindowClosed(False) in app.run().
         super().__init__(None)
 
-        # Frameless + always-on-top + tool-window stops it from appearing
-        # in the taskbar (the tray icon is enough). WA_StyledBackground is
-        # the magic bit: without it, QSS `background:` on a frameless
-        # widget paints nothing and the panel looks invisible-on-desktop,
-        # which is exactly the "fix the panel" bug we were hitting.
+        # Window flags: frameless + always-on-top.
+        # We deliberately DROPPED Qt.Tool here. On Windows 11, frameless
+        # Tool windows with no parent + WA_ShowWithoutActivating sometimes
+        # never paint visibly even after show() returns - the icon shows
+        # in the taskbar but the actual window content is invisible. Using
+        # a regular top-level (no Tool) makes show() reliable. We hide the
+        # taskbar entry separately if needed (it's already minimal).
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # Show-without-activating keeps the panel from stealing focus from
-        # whatever the user was doing. We deliberately do NOT auto-hide on
-        # focus-out anymore (was a bug: panel never got focus, so it hid
-        # IMMEDIATELY). Toggling happens via the tray icon and the Quit
-        # button instead.
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        # WA_TranslucentBackground intentionally NOT set: with frameless,
+        # translucent backgrounds need a custom paintEvent or the window
+        # is fully invisible. We paint via QSS background instead.
         self.setFixedWidth(340)
 
         self._on_open_dashboard = on_open_dashboard
@@ -103,21 +105,36 @@ class ControlPanel(QWidget):
     def _show_impl(self) -> None:
         screen = QGuiApplication.screenAt(self._cursor_pos()) or QGuiApplication.primaryScreen()
         area = screen.availableGeometry()
-        # Force a layout so sizeHint reflects the populated widget.
+        # Force a layout pass so width/height reflect the populated widget.
+        # CRITICAL: use self.width()/height() here, NOT sizeHint() - the
+        # widget has setFixedWidth(340) but sizeHint().width() returns the
+        # layout's natural width (~225), so positioning by sizeHint pushed
+        # the right edge 100+ px off-screen. That's why v0.2 looked like
+        # "panel doesn't appear" even though it was technically visible.
         self.adjustSize()
-        sz = self.sizeHint()
+        w, h = self.width(), self.height()
         margin = 12
-        x = area.right() - sz.width() - margin
-        y = area.bottom() - sz.height() - margin
+        x = area.right() - w - margin
+        y = area.bottom() - h - margin
+        # Clamp inside the available area as a belt-and-suspenders against
+        # any future regression (multi-monitor scaling, DPI changes).
+        x = max(area.left() + margin, min(x, area.right() - w - margin))
+        y = max(area.top() + margin, min(y, area.bottom() - h - margin))
+        _log.info("show panel at (%d, %d) actual size=%dx%d screen=%s",
+                  x, y, w, h, area)
         self.move(QPoint(x, y))
         self.show()
         self.raise_()
+        self.activateWindow()
+        _log.info("panel visible=%s geometry=%s", self.isVisible(), self.geometry())
 
     def toggle_near_tray(self) -> None:
         QTimer.singleShot(0, self._toggle_impl)
 
     def _toggle_impl(self) -> None:
-        if self.isVisible():
+        was_visible = self.isVisible()
+        _log.info("toggle requested; currently visible=%s", was_visible)
+        if was_visible:
             self.hide()
         else:
             self._show_impl()

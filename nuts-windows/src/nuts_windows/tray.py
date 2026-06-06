@@ -93,20 +93,27 @@ class Tray:
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Route tray-icon clicks.
 
-        Left-click (or double-click) toggles the floating control panel if
-        the app supplied a handler; otherwise falls back to popping the
-        context menu (which is still wired via setContextMenu for
-        right-click).
+        Logging the raw reason value is intentional: Qt/Windows sometimes
+        reports clicks under non-obvious reasons (e.g. Unknown on shells
+        with custom tray hosts), and we want Nuts.log to tell us why a
+        click went nowhere. Any non-context reason now triggers the
+        panel, not just Trigger/DoubleClick - matches clicky's "any
+        click that isn't a right-click opens the panel" UX.
         """
-        is_left = reason in (
-            QSystemTrayIcon.ActivationReason.Trigger,
-            QSystemTrayIcon.ActivationReason.DoubleClick,
-        )
-        if not is_left:
+        _log.info("tray activated reason=%s", reason)
+        if reason == QSystemTrayIcon.ActivationReason.Context:
+            # Right-click. Qt has already popped the context menu via
+            # setContextMenu(); we don't need to do anything.
             return
+        # Everything else (Trigger / DoubleClick / MiddleClick / Unknown)
+        # we treat as "the user wants the panel".
         if self._on_left_click is not None:
-            self._on_left_click()
+            try:
+                self._on_left_click()
+            except Exception:
+                _log.exception("on_left_click handler raised")
         else:
+            _log.warning("no on_left_click handler set; falling back to menu")
             self._menu.popup(QCursor.pos())
 
     def _build_menu(self) -> None:
@@ -121,6 +128,14 @@ class Tray:
         self._menu.addAction(self._status_action)
 
         self._menu.addSeparator()
+
+        # Explicit "Show Panel" entry - guarantees the user has a way to
+        # open the floating panel even if their Windows configuration
+        # doesn't fire QSystemTrayIcon.Trigger on left-click (some shells
+        # don't). Routes through the same callback as a real left-click.
+        show_panel = QAction("Show Panel", self._menu)
+        show_panel.triggered.connect(self._handle_show_panel)
+        self._menu.addAction(show_panel)
 
         open_dash = QAction("Open dashboard", self._menu)
         open_dash.triggered.connect(lambda: webbrowser.open(DASHBOARD_URL))
@@ -147,6 +162,16 @@ class Tray:
     def _handle_signout(self) -> None:
         config.clear_credentials()
         self.refresh()
+
+    def _handle_show_panel(self) -> None:
+        """Same callback path as a real left-click; logged so the menu
+        item being used (vs. the icon click) is visible in Nuts.log."""
+        _log.info("show_panel menu item clicked")
+        if self._on_left_click is not None:
+            try:
+                self._on_left_click()
+            except Exception:
+                _log.exception("show_panel handler raised")
 
 
 def _make_icon() -> QIcon:
