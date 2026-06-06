@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
+    QListView,
 )
 
 from nuts_windows import config
@@ -151,14 +152,29 @@ class SettingsDialog(QWidget):
             # API keys are mono - read-friendly for long opaque strings
             f"QLineEdit#KeyInput {{ font-family: {mono_family}; "
             "  font-size: 12.5px; letter-spacing: 0.2px; }"
-            "QComboBox::drop-down { width: 30px; border: 0; }"
-            "QComboBox::down-arrow { width: 11px; height: 11px; }"
-            "QComboBox QAbstractItemView { background: #ffffff; "
+            "QComboBox::drop-down { width: 30px; border: 0; "
+            "  subcontrol-origin: padding; subcontrol-position: top right; }"
+            # Tiny tan chevron - drawn via border tricks since QSS can't
+            # reach an inline SVG without a file. Keeps default down-arrow
+            # from rendering blank/invisible on some Windows themes.
+            "QComboBox::down-arrow { width: 0; height: 0; margin-right: 14px; "
+            "  border-left: 5px solid transparent; "
+            "  border-right: 5px solid transparent; "
+            "  border-top: 6px solid #8a7e62; }"
+            # CRITICAL: the popup item-view needs explicit color and the
+            # right item style or Windows dark mode paints text in the
+            # system default (often white on white = invisible). Both
+            # the view background AND each item color are pinned to the
+            # cream palette here.
+            "QComboBox QAbstractItemView { background: #ffffff; color: #1f1b16; "
             "  border: 1px solid #ebe3cf; border-radius: 10px; "
             f"  font-family: {body_family}; font-size: 13.5px; "
             "  selection-background-color: #f5efde; "
             "  selection-color: #1f1b16; outline: 0; padding: 6px; }"
-            "QComboBox QAbstractItemView::item { padding: 9px 12px; border-radius: 6px; }"
+            "QComboBox QAbstractItemView::item { color: #1f1b16; background: transparent; "
+            "  padding: 10px 14px; border-radius: 6px; min-height: 22px; }"
+            "QComboBox QAbstractItemView::item:hover { color: #1f1b16; background: #f5efde; }"
+            "QComboBox QAbstractItemView::item:selected { color: #1f1b16; background: #ebe3cf; }"
             # Buttons - body family
             f"QPushButton {{ color: #1f1b16; background: #ffffff; "
             "  border: 1.5px solid #e3d8b5; border-radius: 10px; "
@@ -225,6 +241,14 @@ class SettingsDialog(QWidget):
         card_root.addWidget(self._field_label("PROVIDER"))
         card_root.addSpacing(6)
         self._provider_box = QComboBox()
+        # Replace the native popup with a QListView so our QSS rules
+        # actually take effect. Without this, Windows draws the popup
+        # using the system theme and our color: rule on QAbstractItemView
+        # is ignored - the dropdown shows white text on white background
+        # (the v0.11 invisible-text bug).
+        list_view = QListView()
+        list_view.setObjectName("ComboDropdown")
+        self._provider_box.setView(list_view)
         for label, _id, _hint, _url in PROVIDERS:
             self._provider_box.addItem(label)
         self._provider_box.currentIndexChanged.connect(self._on_provider_change)
