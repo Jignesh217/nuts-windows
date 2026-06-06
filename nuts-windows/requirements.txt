@@ -1,0 +1,15 @@
+# Core runtime
+PyQt6>=6.6                # tray icon, overlay window, event loop
+pynput>=1.7               # global hotkey (no admin required, unlike `keyboard`)
+mss>=9.0                  # fast multi-monitor screen capture
+sounddevice>=0.4          # mic capture (raw float32 buffers)
+soundfile>=0.12           # write WAV from numpy buffers
+numpy>=1.26               # buffer math for sounddevice
+httpx[http2]>=0.27        # streaming HTTP/2 client for the Worker
+pyttsx3>=2.90             # Windows SAPI TTS (on-device, no network)
+pyautogui>=0.9.54         # cursor positioning via SetCursorPos
+keyring>=24               # Windows Credential Manager for the bearer
+python-dotenv>=1.0        # optional .env loader for dev
+
+# Speech recognition - stubbed in code, uncomment when you wire it up.
+# faster-whisper>=1.0     # CTranslate2 backend, fastest CPU/GPU Whisper
