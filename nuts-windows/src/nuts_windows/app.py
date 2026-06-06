@@ -27,7 +27,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from nuts_windows import bootstrap, config
@@ -78,8 +78,18 @@ class _AsyncWorker:
         self.loop.call_soon_threadsafe(self.loop.stop)
 
 
-class Application:
+class Application(QObject):
+    # Cross-thread signals. The pynput keyboard listener runs in its own
+    # thread and CANNOT touch Qt widgets directly. Signals dispatched
+    # across threads automatically use Qt.QueuedConnection, which puts
+    # the handler call on the Qt main thread event loop. This replaces
+    # the QTimer.singleShot pattern that silently failed - QTimer
+    # scheduled from a non-Qt thread doesn't reliably wake the Qt loop.
+    sig_hotkey_press = pyqtSignal()
+    sig_hotkey_release = pyqtSignal()
+
     def __init__(self, qt_app: QApplication) -> None:
+        super().__init__()
         self._qt = qt_app
         bootstrap.try_auto_signin()
         self._cfg = config.load()
@@ -143,10 +153,15 @@ class Application:
             on_left_click=self._panel.show_,
             on_test_arrow=self._demo_arrow,
         )
+        # Wire the cross-thread signals to the main-thread turn handlers
+        # BEFORE starting the pynput listener so we never miss an early
+        # press. QueuedConnection is implicit when the threads differ.
+        self.sig_hotkey_press.connect(self._begin_turn)
+        self.sig_hotkey_release.connect(self._end_turn)
         self._hotkey = PushToTalk(
             self._cfg.hotkey,
-            on_start=lambda: QTimer.singleShot(0, self._begin_turn),
-            on_stop=lambda: QTimer.singleShot(0, self._end_turn),
+            on_start=self._hotkey_press,
+            on_stop=self._hotkey_release,
         )
         self._hotkey.start()
         self._last_screenshot = None
@@ -219,19 +234,44 @@ class Application:
 
     # ----- push-to-talk turn ----------------------------------------------
 
+    def _hotkey_press(self) -> None:
+        """Pynput callback (RUNS ON LISTENER THREAD - cannot touch Qt
+        directly). We just emit a signal; Qt routes it across the thread
+        boundary via QueuedConnection automatically because emitter
+        and receiver live in different threads."""
+        _hk_log = __import__("logging").getLogger("nuts.hotkey")
+        _hk_log.info("hotkey PRESS detected (pynput thread) - emit signal")
+        self.sig_hotkey_press.emit()
+
+    def _hotkey_release(self) -> None:
+        _hk_log = __import__("logging").getLogger("nuts.hotkey")
+        _hk_log.info("hotkey RELEASE detected (pynput thread) - emit signal")
+        self.sig_hotkey_release.emit()
+
     def _begin_turn(self) -> None:
         """Hotkey pressed: grab the screen NOW (before any UI shifts) and
         start recording. We capture the screenshot up front so the user
         gets the state they were looking at when they decided to talk."""
-        if not self._cfg.signed_in:
-            # No bearer - silently noop. Tray tooltip already nudges them.
-            return
+        _t_log = __import__("logging").getLogger("nuts.turn")
+        _t_log.info("BEGIN turn (signed_in=%s)", self._cfg.signed_in)
+        # Voice works in two modes:
+        #   * with auth + a real Worker -> WorkerBrain (LLM + vision)
+        #   * without auth, DemoBrain -> offline rule responses
+        # We deliberately removed the early "not signed_in -> return"
+        # gate from v0.6 so testing voice without a live worker doesn't
+        # silently noop. DemoBrain doesn't need a token.
         self._speaker.cancel()
         try:
             self._last_screenshot = capture_all()
-        except Exception:
+            _t_log.info("screenshot ok, %d bytes", len(self._last_screenshot.jpeg_bytes))
+        except Exception as e:
+            _t_log.exception("screenshot FAILED: %s", e)
             self._last_screenshot = None
-        self._recorder.start()
+        try:
+            self._recorder.start()
+            _t_log.info("recorder started")
+        except Exception as e:
+            _t_log.exception("recorder.start FAILED (no microphone?): %s", e)
         # Three visual signals for "recording": the ring glued to the cursor
         # (immediate, hard to miss), the mic badge floating top-center of
         # the screen (explicit label), and the persistent badge by the clock
@@ -246,18 +286,26 @@ class Application:
 
     def _end_turn(self) -> None:
         """Hotkey released: stop the mic, send to worker, stream response."""
+        _t_log = __import__("logging").getLogger("nuts.turn")
+        _t_log.info("END turn")
         # The cursor ring + mic badge go away the moment the user releases
         # the hotkey. The persistent badge transitions to "busy" while we
-        # wait on the model. The spring arrow returns to its idle
-        # tan-and-following palette (it stays on screen the whole time -
-        # that's the headline UX).
+        # wait on the model. The spring arrow returns to its idle palette
+        # (it stays on screen the whole time - the headline UX).
         self._cursor_indicator.stop()
         self._mic_badge.stop()
         self._persistent_badge.set_state(STATE_BUSY)
         self._spring_arrow.set_state(ARROW_IDLE)
         rec = self._recorder.stop()
+        if rec is None:
+            _t_log.info("recorder.stop() returned None")
+        else:
+            _t_log.info("recorder.stop() returned %d bytes (dur=%.2fs)",
+                        len(rec.wav_bytes), rec.duration_s)
         if rec is None or self._last_screenshot is None:
+            _t_log.warning("no recording or screenshot - bailing")
             self._panel.set_status("Idle")
+            self._persistent_badge.set_state(STATE_IDLE)
             return
         snap = self._last_screenshot
         self._last_screenshot = None
@@ -284,11 +332,15 @@ class Application:
         memory = self._memory
         panel = self._panel
 
+        _t_log = __import__("logging").getLogger("nuts.turn")
+
         async def go() -> None:
             # 1. Transcribe locally (Whisper). Falls back to None if the
             #    dep isn't installed - we then ship raw WAV to the worker
             #    for cloud STT.
+            _t_log.info("transcribe START (wav=%d bytes)", len(rec.wav_bytes))
             transcript = await asyncio.to_thread(transcribe, rec.wav_bytes)
+            _t_log.info("transcribe DONE: %r", transcript)
             # 2. Voice-command shortcuts. Intercept "remember this …" and
             #    "what do you remember about …" without going to the model.
             if transcript:
@@ -327,13 +379,16 @@ class Application:
                 screenshot_jpeg=snap.jpeg_bytes,
                 monitors=snap.monitors,
             )
+            _t_log.info("brain.stream START (%s)", type(self._brain).__name__)
             try:
+                chunk_count = 0
                 async for chunk in self._brain.stream(ctx):
+                    chunk_count += 1
+                    _t_log.info("brain chunk %d: %r", chunk_count, chunk[:120])
                     self._handle_chunk(chunk, snap.monitors)
-            except Exception:
-                # Brain dropped / auth failed - swallow for the scaffold;
-                # later wire to a tray notification.
-                pass
+                _t_log.info("brain.stream END (%d chunks)", chunk_count)
+            except Exception as e:
+                _t_log.exception("brain.stream FAILED: %s", e)
             finally:
                 # Flush any text the speaker is still holding (a trailing
                 # fragment without a sentence-ending punctuation). Without

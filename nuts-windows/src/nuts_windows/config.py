@@ -31,9 +31,10 @@ ACCOUNT_ARROW_COLOR = "arrow-color"
 
 DEFAULT_WORKER_URL = "https://akhrots.com/mcp"
 DEFAULT_HOTKEY = "<ctrl>+<alt>"   # pynput-style notation
-# Tan that matches the akhrots.com dashboard brand. The HoverPanel
-# color-picker swatches override this at runtime.
-DEFAULT_ARROW_COLOR = "#f5d791"
+# Default to the YELLOW swatch from the HoverBar picker - it's the
+# closest match to the akhrots.com cream branding without the
+# Tan-vs-Yellow visual confusion the v0.7 picker had.
+DEFAULT_ARROW_COLOR = "#ffe48c"
 
 
 @dataclass(frozen=True, slots=True)

@@ -67,14 +67,15 @@ STATE_IDLE = "idle"
 STATE_LISTENING = "listening"
 STATE_BUSY = "busy"
 
-# Available arrow colors for the picker - light pastels so the arrow
-# doesn't fight whatever's on screen behind it.
+# Available arrow colors for the picker - four light pastels matching
+# what the user explicitly requested. Tan (the brand cream) was nearly
+# identical to Yellow so we dropped it; the YELLOW swatch is the
+# default if no color has been picked yet.
 ARROW_COLORS = [
     ("Red",    "#ff8c8c"),
     ("Blue",   "#8cb4ff"),
     ("Yellow", "#ffe48c"),
     ("Green",  "#a0e0a0"),
-    ("Tan",    "#f5d791"),    # default brand
 ]
 
 

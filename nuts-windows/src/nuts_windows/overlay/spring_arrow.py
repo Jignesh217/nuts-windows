@@ -39,6 +39,7 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPen,
     QPolygonF,
+    QRadialGradient,
 )
 from PyQt6.QtWidgets import QWidget
 
@@ -212,39 +213,68 @@ class SpringArrow(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         color = self._state_color()
 
-        # 1) Trail - older points more transparent + slightly smaller
+        # Subtle aura breath - now SLOWER (1.7 Hz vs old 3.0 Hz) so the
+        # glow drifts in and out rather than jittering. The radial-
+        # gradient aura below also makes the fade naturally smooth -
+        # no more visible concentric "rings".
+        breath = 0.5 + 0.5 * math.sin(time.time() * 1.7)
+
+        # 1) Trail - older points fade to nothing, like a comet tail.
+        # Use smaller radius and quadratic alpha so the older the wisp,
+        # the wispier it looks. This is the "fading effect" the user
+        # asked for in v0.7.
         if len(self._trail) > 1:
             for i, pt in enumerate(self._trail):
                 t = i / len(self._trail)
-                alpha = int(140 * t * t)
-                r = 4.0 + 2.0 * t
+                alpha = int(110 * (t ** 2.2))
+                r = 2.0 + 2.5 * t
                 tc = QColor(color); tc.setAlpha(alpha)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QBrush(tc))
                 p.drawEllipse(QPointF(pt.x() + ox, pt.y() + oy), r, r)
 
-        # 2) Halo at the head - bigger / brighter when listening or pointing
+        # 2) Aura - SINGLE radial gradient (not stacked discrete ellipses
+        # like v0.7). A radial gradient interpolates alpha continuously
+        # from full opacity at center to zero at the outer edge, which
+        # is what the user means by "smooth fading". No visible rings.
         head = QPointF(self._pos.x() + ox, self._pos.y() + oy)
-        halo_r = 14
-        halo_a = 60
         if self._state == STATE_LISTENING:
-            halo_r = 22; halo_a = 110
+            base_r, base_a = 38, 165      # big bright aura when talking
         elif self._state == STATE_POINTING:
-            halo_r = 28; halo_a = 140
-        halo = QColor(color); halo.setAlpha(halo_a)
-        p.setBrush(QBrush(halo))
+            base_r, base_a = 46, 180
+        else:
+            base_r, base_a = 22, 100      # gentle idle glow
+        # Breath modulates the outer radius slightly (the perceived
+        # softness) AND the inner alpha (so the head's brightness pulses).
+        aura_r = base_r * (0.96 + 0.16 * breath)
+        inner_alpha = int(base_a * (0.85 + 0.3 * breath))
+        gradient = QRadialGradient(head, aura_r)
+        # Multiple gradient stops give the painter information to
+        # interpolate against, eliminating banding. The curve mimics
+        # an exponential falloff (most opacity near the center, soft
+        # tail at the edge).
+        c0 = QColor(color); c0.setAlpha(inner_alpha)
+        c1 = QColor(color); c1.setAlpha(int(inner_alpha * 0.55))
+        c2 = QColor(color); c2.setAlpha(int(inner_alpha * 0.22))
+        c3 = QColor(color); c3.setAlpha(int(inner_alpha * 0.08))
+        c4 = QColor(color); c4.setAlpha(0)
+        gradient.setColorAt(0.00, c0)
+        gradient.setColorAt(0.18, c1)
+        gradient.setColorAt(0.42, c2)
+        gradient.setColorAt(0.70, c3)
+        gradient.setColorAt(1.00, c4)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(head, halo_r, halo_r)
+        p.setBrush(QBrush(gradient))
+        p.drawEllipse(head, aura_r, aura_r)
 
-        # 3) Arrowhead - ALWAYS pointing up-left like Windows' real
-        # cursor. Velocity-based rotation looked busy in v0.5; matching
-        # the OS pointer is what users expect from a "spirit cursor".
-        # -3*pi/4 = "up and to the left" in screen coords.
+        # 3) Tiny arrowhead - significantly smaller than v0.6 per
+        # explicit user feedback ("MAKE IT A BIT SMALL"). Always
+        # points up-left like the real Windows pointer.
         self._draw_arrow(p, head, -3 * math.pi / 4, core=color)
 
-        # 4) Optional utterance label near the target
+        # 4) Utterance label near the target
         if self._point_label and self._state == STATE_POINTING:
-            label_pos = QPointF(head.x() + 24, head.y() - 22)
+            label_pos = QPointF(head.x() + 22, head.y() - 24)
             self._draw_label(p, label_pos, self._point_label)
 
         p.end()
@@ -253,20 +283,26 @@ class SpringArrow(QWidget):
         p.save()
         p.translate(at)
         p.rotate(math.degrees(angle) + 90)
-        # Classic Windows-pointer silhouette, scaled small. Tip at top,
-        # tail at bottom-right and bottom-left, with a notch.
+        # Smaller silhouette than v0.6 - the aura is the main visual,
+        # the arrowhead is just a directional accent. Tip ~8 px from
+        # center; old was 13.
         tri = QPolygonF([
-            QPointF(0, -13),
-            QPointF(10, 10),
-            QPointF(0, 5),
-            QPointF(-10, 10),
+            QPointF(0, -8),
+            QPointF(6.5, 6),
+            QPointF(0, 3),
+            QPointF(-6.5, 6),
         ])
-        # No outline - the user explicitly asked for the black border to
-        # go away. Halo behind the arrowhead provides the contrast on
-        # any background instead.
+        # No outline (matches the "remove the black border" ask). The
+        # aura behind provides the contrast on any background.
         p.setPen(Qt.PenStyle.NoPen)
-        c = QColor(core); c.setAlpha(245)
-        p.setBrush(QBrush(c))
+        # Brighter than the aura layers so the head reads clearly.
+        c = QColor(core)
+        c.setAlpha(255)
+        # Slight color lift toward white for the "glowing" feel.
+        r = min(255, c.red() + 22)
+        g = min(255, c.green() + 22)
+        b = min(255, c.blue() + 22)
+        p.setBrush(QBrush(QColor(r, g, b, 255)))
         p.drawPolygon(tri)
         p.restore()
 
