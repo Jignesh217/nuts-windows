@@ -113,8 +113,22 @@ class Application:
         snap = self._last_screenshot
         self._last_screenshot = None
 
-        if self._client is None or self._client._base.rstrip("/") != self._cfg.worker_url.rstrip("/"):
+        # Recreate the client if EITHER the URL or the token has changed
+        # since last turn. Previously we only checked the URL, which meant
+        # a token rotation (e.g. user signed out + back in) kept the stale
+        # bearer until the next URL change. Fixed in the v0.1 bug review.
+        if (
+            self._client is None
+            or self._client.base_url != self._cfg.worker_url.rstrip("/")
+            or self._client.bearer != self._cfg.token
+        ):
+            if self._client is not None:
+                # Don't leak the old connection pool.
+                self._async.submit(self._client.aclose())
             self._client = WorkerClient(self._cfg.worker_url, self._cfg.token)
+
+        client = self._client
+        speaker = self._speaker
 
         async def go() -> None:
             req = WorkerRequest(
@@ -122,12 +136,17 @@ class Application:
                 audio_wav=rec.wav_bytes,
             )
             try:
-                async for chunk in self._client.stream_response(req):
+                async for chunk in client.stream_response(req):
                     self._handle_chunk(chunk, snap.monitors)
             except Exception:
                 # The model dropped the connection or auth failed - swallow
                 # for the scaffold; later wire to a tray notification.
                 pass
+            finally:
+                # Flush any text the speaker is still holding (a trailing
+                # fragment without a sentence-ending punctuation). Without
+                # this the final clause was silently dropped.
+                speaker.flush()
 
         self._async.submit(go())
 

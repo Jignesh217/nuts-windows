@@ -33,7 +33,13 @@ class WorkerRequest:
 
 class WorkerClient:
     def __init__(self, base_url: str, bearer: Optional[str]) -> None:
-        self._base = base_url.rstrip("/")
+        # Public attributes used by app.py to decide whether the current
+        # client is still valid for the current config. Read-only by
+        # convention; reassigning them would NOT reconfigure the underlying
+        # connection - app.py creates a new WorkerClient instead.
+        self.base_url = base_url.rstrip("/")
+        self.bearer = bearer
+
         self._headers = {"Authorization": f"Bearer {bearer}"} if bearer else {}
         # http2=True keeps the connection warm across rapid push-to-talk
         # cycles; the worker upstream supports it.
@@ -56,7 +62,7 @@ class WorkerClient:
 
         async with self._client.stream(
             "POST",
-            f"{self._base}/respond",
+            f"{self.base_url}/respond",
             files=files,
             data=data,
             headers=self._headers,

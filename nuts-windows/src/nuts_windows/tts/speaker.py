@@ -20,34 +20,58 @@ import threading
 import pyttsx3
 
 
+_FLUSH = object()   # sentinel: drain remaining buffer immediately
+
+
 class Speaker:
+    """Sentence-boundary-buffered TTS over Windows SAPI.
+
+    Threading note (was a bug before the v0.1 review): pyttsx3 + SAPI is
+    COM-bound. The engine MUST be created on the same thread that drives
+    runAndWait(). We previously instantiated it on the main thread and
+    used it from the worker thread, which caused silent failures on
+    Windows. The engine is now created inside ``_run``.
+    """
+
     def __init__(self) -> None:
-        self._engine = pyttsx3.init()
-        # Slightly faster than the SAPI default - default reads slowly.
-        self._engine.setProperty("rate", 190)
-        self._q: "queue.Queue[str | None]" = queue.Queue()
+        self._q: "queue.Queue[str | object | None]" = queue.Queue()
         self._cancel = threading.Event()
+        # Engine handle is bound to whatever thread calls init() - we let
+        # the worker thread do it. cancel() touches the engine from
+        # outside, but engine.stop() is documented as safe to call from
+        # any thread.
+        self._engine: "pyttsx3.Engine | None" = None
+        self._engine_ready = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def speak(self, text: str) -> None:
         """Enqueue a chunk to be spoken.
 
-        We split on sentence boundaries before pushing so partial chunks
+        We buffer until a sentence-ending punctuation so partial chunks
         from the SSE stream don't get spoken with weird mid-sentence
-        prosody. Caller can stream many small chunks - we buffer until a
-        period/question mark/newline lands.
+        prosody. Caller can stream many small chunks.
         """
         if text:
             self._q.put(text)
 
+    def flush(self) -> None:
+        """Drain any remaining buffered text immediately.
+
+        Call this once an upstream stream ends - otherwise the trailing
+        fragment (e.g. a final clause without a period) sits in the
+        buffer forever and the user never hears it.
+        """
+        self._q.put(_FLUSH)
+
     def cancel(self) -> None:
         """Interrupt any in-progress speech and drain the queue."""
         self._cancel.set()
-        try:
-            self._engine.stop()
-        except Exception:
-            pass
+        if self._engine is not None:
+            try:
+                self._engine.stop()
+            except Exception:
+                pass
         # Drain pending utterances.
         try:
             while True:
@@ -62,12 +86,29 @@ class Speaker:
     # ----- internal --------------------------------------------------------
 
     def _run(self) -> None:
+        # Init the engine on THIS thread - SAPI COM apartment is per-thread.
+        try:
+            self._engine = pyttsx3.init()
+            self._engine.setProperty("rate", 190)
+        except Exception:
+            # No SAPI? Mark ready anyway so callers don't deadlock. speak()
+            # calls will queue but never play; the app degrades gracefully.
+            self._engine_ready.set()
+            return
+        self._engine_ready.set()
+
         buf = ""
         while True:
             item = self._q.get()
             if item is None:
                 return
-            buf += item
+            if item is _FLUSH:
+                # Speak whatever is left, sentence-end or not.
+                tail, buf = buf.strip(), ""
+                if tail and not self._cancel.is_set():
+                    self._say(tail)
+                continue
+            buf += item   # type: ignore[operator]
             # Speak as soon as we have a complete sentence. This matches
             # how Nuts streams audio chunk-by-chunk on Mac.
             while True:
@@ -78,12 +119,15 @@ class Speaker:
                 if self._cancel.is_set():
                     buf = ""
                     break
-                try:
-                    self._engine.say(sentence)
-                    self._engine.runAndWait()
-                except Exception:
-                    # SAPI dropped - skip this utterance, keep the loop alive.
-                    pass
+                self._say(sentence)
+
+    def _say(self, text: str) -> None:
+        try:
+            self._engine.say(text)        # type: ignore[union-attr]
+            self._engine.runAndWait()     # type: ignore[union-attr]
+        except Exception:
+            # SAPI dropped - skip this utterance, keep the loop alive.
+            pass
 
 
 def _sentence_end(s: str) -> int:

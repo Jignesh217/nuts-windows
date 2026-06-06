@@ -2,6 +2,7 @@
 PyQt6>=6.6                # tray icon, overlay window, event loop
 pynput>=1.7               # global hotkey (no admin required, unlike `keyboard`)
 mss>=9.0                  # fast multi-monitor screen capture
+Pillow>=10.0              # PIL.Image, used to JPEG-encode the screenshot
 sounddevice>=0.4          # mic capture (raw float32 buffers)
 soundfile>=0.12           # write WAV from numpy buffers
 numpy>=1.26               # buffer math for sounddevice
