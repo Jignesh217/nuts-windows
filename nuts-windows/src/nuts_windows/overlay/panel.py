@@ -76,7 +76,23 @@ class ControlPanel(QWidget):
     # ----- public API (thread-safe via QTimer marshalling) ----------------
 
     def set_status(self, text: str) -> None:
-        QTimer.singleShot(0, lambda: self._status.setText(text))
+        # Map the human label to the object name that drives QSS color so
+        # the pill goes green on "Listening", brown on "Thinking", etc.
+        # Polymorphic QSS approach - no extra CSS rules per state.
+        upper = text.upper()
+        if "LISTEN" in upper:
+            new_name = "StatusListening"
+        elif "THINK" in upper or "REPLY" in upper or "RESPOND" in upper or "BUSY" in upper:
+            new_name = "StatusBusy"
+        else:
+            new_name = "Status"
+        def _apply():
+            self._status.setText(upper)
+            self._status.setObjectName(new_name)
+            # Force QSS re-evaluation; setObjectName alone doesn't repaint.
+            self._status.style().unpolish(self._status)
+            self._status.style().polish(self._status)
+        QTimer.singleShot(0, _apply)
 
     def set_signin(self, text: str) -> None:
         QTimer.singleShot(0, lambda: self._signin.setText(text))
@@ -156,65 +172,81 @@ class ControlPanel(QWidget):
         self.setObjectName("ControlPanelRoot")
         # We hand-roll styling to match the akhrots.com warm-cream brand
         # from the dashboard so users feel they're using the same product.
+        # CRITICAL fixes vs. v0.2:
+        #   * Explicit `color:` on QPushButton - without it, Windows dark
+        #     mode rendered button text white-on-white (looked empty).
+        #   * Bigger font defaults; v0.2's 11pt looked dense and amateur.
+        #   * Status pill colored by state (cream when idle, green when
+        #     listening) - matches clicky's "you can see what mode I'm in".
         self.setStyleSheet(
-            "QWidget#ControlPanelRoot { background: #faf5e8; border: 1px solid #ebe3cf; border-radius: 10px; }"
-            "QLabel { color: #1f1b16; font-family: 'Segoe UI'; }"
-            "QLabel#Title { font-size: 14px; font-weight: 600; }"
-            "QLabel#Subtle { color: #6b6357; font-size: 11px; }"
-            "QLabel#Status { font-size: 12px; font-weight: 600; padding: 2px 6px; "
-            "  background: #ebe3cf; border-radius: 4px; }"
-            "QLabel#Response { color: #1f1b16; font-size: 12px; line-height: 1.4; }"
-            "QPushButton { background: #ffffff; border: 1px solid #ebe3cf; "
-            "  border-radius: 6px; padding: 5px 10px; font-family: 'Segoe UI'; font-size: 11px; }"
-            "QPushButton:hover { background: #f5efde; }"
+            "QWidget#ControlPanelRoot { background: #faf5e8; border: 1px solid #ebe3cf; border-radius: 12px; }"
+            "QLabel { color: #1f1b16; font-family: 'Segoe UI'; font-size: 13px; }"
+            "QLabel#Title { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }"
+            "QLabel#Subtle { color: #6b6357; font-size: 12px; }"
+            "QLabel#SubtleSmall { color: #6b6357; font-size: 11px; font-weight: 500; }"
+            "QLabel#Status { color: #1f1b16; font-size: 11px; font-weight: 700; padding: 4px 10px; "
+            "  background: #ebe3cf; border-radius: 10px; letter-spacing: 0.4px; }"
+            "QLabel#StatusListening { color: #ffffff; background: #2f7a4f; }"
+            "QLabel#StatusBusy { color: #ffffff; background: #8a5a30; }"
+            "QLabel#Response { color: #1f1b16; font-size: 12px; line-height: 1.45; }"
+            "QPushButton { color: #1f1b16; background: #ffffff; border: 1px solid #ebe3cf; "
+            "  border-radius: 8px; padding: 6px 14px; font-family: 'Segoe UI'; "
+            "  font-size: 12px; font-weight: 600; }"
+            "QPushButton:hover { background: #f5efde; border-color: #d9d0b8; }"
+            "QPushButton:pressed { background: #ebe3cf; }"
             "QPushButton#Quit { color: #8a3030; }"
-            "QFrame#Sep { background: #ebe3cf; max-height: 1px; }"
+            "QPushButton#Quit:hover { background: #fae5e5; border-color: #e7c4c4; }"
+            "QFrame#Sep { color: #ebe3cf; background: #ebe3cf; max-height: 1px; }"
         )
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(18, 16, 18, 14)
+        root.setSpacing(10)
 
         # Title row: brand + status pill
         head = QHBoxLayout()
+        head.setSpacing(8)
         title = QLabel("Akhort")
         title.setObjectName("Title")
         head.addWidget(title)
         head.addStretch()
-        self._status = QLabel("Idle")
+        self._status = QLabel("IDLE")
         self._status.setObjectName("Status")
         head.addWidget(self._status)
         root.addLayout(head)
 
-        # Hotkey reminder
+        # Hotkey reminder - small but legible
         hint = QLabel("Hold <b>Ctrl + Alt</b> to talk")
         hint.setObjectName("Subtle")
         root.addWidget(hint)
 
         # Sign-in line
         self._signin = QLabel("Signed in")
-        self._signin.setObjectName("Subtle")
+        self._signin.setObjectName("SubtleSmall")
         root.addWidget(self._signin)
 
         sep = QFrame(); sep.setObjectName("Sep"); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
         root.addWidget(sep)
 
         # Live response area
         resp_label = QLabel("Last response")
-        resp_label.setObjectName("Subtle")
+        resp_label.setObjectName("SubtleSmall")
         root.addWidget(resp_label)
-        self._response = QLabel("")
+        self._response = QLabel("Nothing yet — hold Ctrl+Alt and ask me something.")
         self._response.setObjectName("Response")
         self._response.setWordWrap(True)
-        self._response.setMinimumHeight(60)
-        self._response.setMaximumHeight(120)
+        self._response.setMinimumHeight(64)
+        self._response.setMaximumHeight(140)
         self._response.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(self._response)
 
         # Buttons
         sep2 = QFrame(); sep2.setObjectName("Sep"); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setFixedHeight(1)
         root.addWidget(sep2)
         btns = QHBoxLayout()
+        btns.setSpacing(8)
         dash = QPushButton("Dashboard")
         dash.clicked.connect(self._on_open_dashboard)
         btns.addWidget(dash)

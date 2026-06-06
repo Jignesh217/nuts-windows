@@ -37,6 +37,12 @@ from nuts_windows import memory as memory_mod
 from nuts_windows.hotkey import PushToTalk
 from nuts_windows.overlay import cursor as cursor_mod
 from nuts_windows.overlay.indicator import CursorIndicator, MicBadge, PointOverlay
+from nuts_windows.overlay.persistent_badge import (
+    PersistentBadge,
+    STATE_IDLE,
+    STATE_LISTENING,
+    STATE_BUSY,
+)
 from nuts_windows.overlay.panel import ControlPanel
 from nuts_windows.memory import Memory
 from nuts_windows.transport.worker import WorkerClient, WorkerRequest
@@ -86,6 +92,14 @@ class Application:
         self._cursor_indicator = CursorIndicator()
         self._mic_badge = MicBadge()
         self._point_overlay = PointOverlay()
+        # Persistent badge - always visible just above the taskbar clock.
+        # Hover halo intensifies, click toggles the floating panel. We
+        # show this UP FRONT so users don't have to hunt for the tray
+        # icon (Win11 hides it behind a chevron by default).
+        self._persistent_badge = PersistentBadge()
+        self._persistent_badge.clicked.connect(self._panel.toggle_near_tray)
+        self._persistent_badge.show_()
+        self._persistent_badge.set_state(STATE_IDLE)
         # Memory: local on-disk JSONL store for "remember this" voice
         # commands. Loaded once, written incrementally. Lives in the
         # same %LOCALAPPDATA%\Akhort directory as the log file.
@@ -155,11 +169,13 @@ class Application:
         except Exception:
             self._last_screenshot = None
         self._recorder.start()
-        # Two visual signals for "recording": the ring glued to the cursor
-        # (immediate, hard to miss) and the mic badge floating top-center
-        # of the screen (explicit, label tells you exactly what's happening).
+        # Three visual signals for "recording": the ring glued to the cursor
+        # (immediate, hard to miss), the mic badge floating top-center of
+        # the screen (explicit label), and the persistent badge by the clock
+        # turning green (peripheral, always-visible state indicator).
         self._cursor_indicator.start()
         self._mic_badge.start()
+        self._persistent_badge.set_state(STATE_LISTENING)
         self._panel.set_status("Listening")
 
     def _end_turn(self) -> None:
@@ -167,8 +183,11 @@ class Application:
         # The cursor ring + mic badge go away the moment the user releases
         # the hotkey, even if the recording was empty or the screenshot
         # failed - the visual contract is "rings/badge = listening".
+        # The persistent badge transitions to "busy" while we wait on the
+        # model and back to "idle" once the stream finishes.
         self._cursor_indicator.stop()
         self._mic_badge.stop()
+        self._persistent_badge.set_state(STATE_BUSY)
         rec = self._recorder.stop()
         if rec is None or self._last_screenshot is None:
             self._panel.set_status("Idle")
@@ -215,6 +234,7 @@ class Application:
                     speaker.speak(line + ".")
                     speaker.flush()
                     panel.set_status("Idle")
+                    self._persistent_badge.set_state(STATE_IDLE)
                     return
                 if memory_mod.is_recall(transcript):
                     q = memory_mod.extract_recall_query(transcript)
@@ -227,6 +247,7 @@ class Application:
                     speaker.speak(line)
                     speaker.flush()
                     panel.set_status("Idle")
+                    self._persistent_badge.set_state(STATE_IDLE)
                     return
 
             req = WorkerRequest(
