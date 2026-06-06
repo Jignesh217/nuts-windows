@@ -12,5 +12,8 @@ pyautogui>=0.9.54         # cursor positioning via SetCursorPos
 keyring>=24               # Windows Credential Manager for the bearer
 python-dotenv>=1.0        # optional .env loader for dev
 
-# Speech recognition - stubbed in code, uncomment when you wire it up.
-# faster-whisper>=1.0     # CTranslate2 backend, fastest CPU/GPU Whisper
+# Speech recognition (on-device, like Clicky's WhisperKit on Mac).
+# faster-whisper is the CTranslate2 backend - the fastest CPU/GPU Whisper.
+# Model downloads on first use (~150 MB for "base"). Optional - if missing,
+# the app falls back to sending raw WAV to the worker for cloud STT.
+faster-whisper>=1.0

@@ -40,19 +40,21 @@ class Tray:
         app: QApplication,
         on_reload: Callable[[], None],
         on_quit: Callable[[], None],
+        on_left_click: Optional[Callable[[], None]] = None,
     ) -> None:
         self._app = app
         self._on_reload = on_reload
         self._on_quit = on_quit
+        # Optional handler for left-click. When provided, left-click toggles
+        # the floating control panel (the clicky-style UI). The right-click
+        # context menu is always available regardless.
+        self._on_left_click = on_left_click
         self._icon = QSystemTrayIcon(_make_icon(), parent=app)
         self._icon.setToolTip("Akhort - hold Ctrl+Alt to talk")
         self._menu = QMenu()
         self._status_action: Optional[QAction] = None
         self._build_menu()
         self._icon.setContextMenu(self._menu)
-        # Left-click should also pop the menu (right-click already does via
-        # setContextMenu). On Windows the default is right-click only, so
-        # users who left-click out of habit get nothing - this fixes that.
         self._icon.activated.connect(self._on_activated)
         self._icon.show()
         if not self._icon.isVisible():
@@ -89,17 +91,22 @@ class Tray:
     # ----- internal --------------------------------------------------------
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        """Show the menu on any icon click (left or right).
+        """Route tray-icon clicks.
 
-        Windows treats left-click as ``Trigger`` and right-click as
-        ``Context``. setContextMenu wires the right-click for free, but
-        users who left-click out of habit got nothing. Pop the same menu
-        either way - cheap UX win.
+        Left-click (or double-click) toggles the floating control panel if
+        the app supplied a handler; otherwise falls back to popping the
+        context menu (which is still wired via setContextMenu for
+        right-click).
         """
-        if reason in (
+        is_left = reason in (
             QSystemTrayIcon.ActivationReason.Trigger,
             QSystemTrayIcon.ActivationReason.DoubleClick,
-        ):
+        )
+        if not is_left:
+            return
+        if self._on_left_click is not None:
+            self._on_left_click()
+        else:
             self._menu.popup(QCursor.pos())
 
     def _build_menu(self) -> None:

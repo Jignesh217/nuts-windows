@@ -1,25 +1,17 @@
 """Microphone capture + speech-to-text.
 
 Push-to-talk model:
-  start_recording() -> returns immediately, audio buffers accumulate in
-    a background sounddevice callback.
-  stop_recording()  -> drains the buffer, returns either:
-                          * (audio_bytes, "wav") for the Worker to STT, or
-                          * (text, "transcript") if we've already run STT locally.
+  Recorder.start()  -> begins buffering audio via sounddevice callback.
+  Recorder.stop()   -> drains buffer, returns a Recording (WAV bytes).
 
-Today we send raw WAV to the Worker because the on-device Whisper bit is
-still a TODO. Wiring local Whisper:
+Transcribe.run(wav_bytes) -> on-device Whisper transcript (or None if
+the model isn't installed - the caller can fall back to cloud STT).
 
-  pip install faster-whisper
-  # then below in stop_recording(), do:
-  from faster_whisper import WhisperModel
-  model = WhisperModel("base", device="auto", compute_type="auto")
-  segments, _ = model.transcribe(wav_path, beam_size=1)
-  text = " ".join(s.text for s in segments)
-
-That gives us parity with Nuts's on-device WhisperKit. ``base`` is a
-~150 MB model; ``small`` (~480 MB) is better. We default to ``base`` to
-keep first-launch download under 200 MB.
+The Whisper backend is faster-whisper (CTranslate2) - same approach as
+Clicky's WhisperKit on macOS, but cross-platform. First call downloads
+the model (~150 MB for ``base``) into ``~/.cache/huggingface/hub`` and
+caches it for every subsequent run. The download is lazy and threaded so
+it doesn't block the Qt event loop.
 """
 from __future__ import annotations
 
@@ -108,3 +100,50 @@ class Recorder:
             return
         # Copy because PortAudio reuses its buffer underneath us.
         self._chunks.append(indata.copy())
+
+
+# ---------------------------------------------------------------------------
+# Local speech-to-text via faster-whisper.
+# ---------------------------------------------------------------------------
+# Initialized lazily on first transcribe(); first call pays the model download
+# cost (~150 MB). Subsequent calls hit the local cache. Falls back to None
+# transparently if the dependency isn't installed - the worker can then do
+# cloud STT.
+
+_WHISPER_MODEL = None
+_WHISPER_LOCK = threading.Lock()
+
+
+def _whisper_init():
+    """Return a loaded WhisperModel, or None if faster-whisper isn't installed."""
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is not None:
+        return _WHISPER_MODEL
+    with _WHISPER_LOCK:
+        if _WHISPER_MODEL is not None:
+            return _WHISPER_MODEL
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            return None
+        # "base" balances size (~150 MB) and quality; "small" is sharper
+        # but ~3x bigger. device="auto" + compute_type="auto" picks GPU
+        # when CUDA is present, else INT8 on CPU which is plenty fast.
+        _WHISPER_MODEL = WhisperModel("base", device="auto", compute_type="auto")
+        return _WHISPER_MODEL
+
+
+def transcribe(wav_bytes: bytes) -> Optional[str]:
+    """Transcribe WAV bytes with local Whisper. Returns text, or None if
+    Whisper isn't installed / failed. Synchronous - call from a worker
+    thread, never from the Qt main thread."""
+    model = _whisper_init()
+    if model is None:
+        return None
+    # faster-whisper wants a file-like object or path. BytesIO works.
+    try:
+        bio = io.BytesIO(wav_bytes)
+        segments, _info = model.transcribe(bio, beam_size=1, language=None)
+        return " ".join(s.text.strip() for s in segments).strip()
+    except Exception:
+        return None
