@@ -317,28 +317,58 @@ PROVIDER_DEFAULTS = {
 # ---------------------------------------------------------------------------
 
 class GeminiBrain:
-    """Google Gemini via the public Generative Language API."""
+    """Google Gemini via the public Generative Language API.
+
+    Model naming on Google's free tier is unfortunately a moving target -
+    they retire model aliases on new projects every few months. We try a
+    cascade of known-good model names so a single 404 doesn't dead-end
+    voice. The first model that returns 200 wins and is cached for the
+    rest of the session.
+    """
 
     BASE = "https://generativelanguage.googleapis.com/v1beta"
-    # Stable, vision-capable, generous free tier (1500 req/day, 15 req/min).
-    # The previous default 'gemini-2.0-flash-exp' got deprecated and now
-    # returns 404. gemini-1.5-flash is the safe long-lived choice.
-    DEFAULT_MODEL = "gemini-1.5-flash"
+    # Order matters: most current free-tier vision models first.
+    # gemini-2.5-flash is the current default on AI Studio as of mid-2026.
+    # Each is vision-capable. If user overrides via Settings, only that
+    # model is tried (no fallback) - we respect explicit configuration.
+    FALLBACK_CHAIN = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-1.5-flash-latest",
+    ]
+    DEFAULT_MODEL = FALLBACK_CHAIN[0]
+
+    # Class-level cache of the model that worked last - avoids spending
+    # a 404 on every voice turn after the first miss.
+    _WORKING_MODEL: Optional[str] = None
 
     def __init__(self, api_key: str, *, model: Optional[str] = None,
                  max_tokens: int = 400) -> None:
         self._api_key = api_key
-        self._model = model or self.DEFAULT_MODEL
         self._max_tokens = max_tokens
+        if model:
+            # User explicitly picked one - honor it, no fallback.
+            self._candidates = [model]
+        else:
+            # Try the cached working model first, then the rest.
+            cached = type(self)._WORKING_MODEL
+            chain = list(self.FALLBACK_CHAIN)
+            if cached and cached in chain:
+                chain.remove(cached)
+                chain.insert(0, cached)
+            self._candidates = chain
 
     async def stream(self, ctx: BrainContext) -> AsyncIterator[str]:
         import base64, json as _json
         import httpx
+        import logging
+        log = logging.getLogger("nuts.brain")
 
-        # Gemini uses 'parts' arrays of either text or inlineData. We put
-        # the image first, the text second - matches their docs' best-
-        # practice for multimodal prompts.
-        parts = []
+        # Gemini uses 'parts' arrays of either text or inlineData. Image
+        # first, then text - matches their multimodal best-practice.
+        parts: list = []
         if ctx.screenshot_jpeg:
             parts.append({"inlineData": {
                 "mimeType": "image/jpeg",
@@ -355,58 +385,83 @@ class GeminiBrain:
                 "temperature": 0.7,
             },
         }
-        url = (
-            f"{self.BASE}/models/{self._model}:streamGenerateContent"
-            f"?alt=sse&key={self._api_key}"
-        )
 
+        last_error: Optional[str] = None
         async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST", url, json=body,
-                headers={"Content-Type": "application/json"},
-            ) as resp:
-                if resp.status_code >= 400:
-                    body_text = ""
-                    try:
-                        async for c in resp.aiter_text():
-                            body_text += c
-                            if len(body_text) > 2000:
-                                break
-                    except Exception:
-                        pass
-                    msg = body_text
-                    try:
-                        j = _json.loads(body_text)
-                        msg = j.get("error", {}).get("message", body_text)
-                    except Exception:
-                        pass
-                    raise RuntimeError(
-                        f"Gemini returned {resp.status_code}: {msg}"
-                    )
-                buf = ""
-                async for raw in resp.aiter_text():
-                    buf += raw
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        line = line.rstrip("\r")
-                        if not line.startswith("data:"):
-                            continue
-                        payload = line[5:].strip()
-                        if not payload:
-                            continue
+            for model_name in self._candidates:
+                url = (
+                    f"{self.BASE}/models/{model_name}:streamGenerateContent"
+                    f"?alt=sse&key={self._api_key}"
+                )
+                async with client.stream(
+                    "POST", url, json=body,
+                    headers={"Content-Type": "application/json"},
+                ) as resp:
+                    # 404 = this model isn't available on the caller's
+                    # tier/project; try the next one silently.
+                    if resp.status_code == 404 and len(self._candidates) > 1:
+                        body_text = ""
                         try:
-                            evt = _json.loads(payload)
+                            async for c in resp.aiter_text():
+                                body_text += c
+                                if len(body_text) > 1500:
+                                    break
                         except Exception:
-                            continue
-                        # candidates[0].content.parts[*].text
+                            pass
+                        log.info("Gemini %s -> 404, trying next candidate", model_name)
+                        last_error = f"Gemini returned 404 on {model_name}: {body_text[:200]}"
+                        continue
+                    if resp.status_code >= 400:
+                        body_text = ""
                         try:
-                            parts = evt["candidates"][0]["content"]["parts"]
-                            for part in parts:
-                                text = part.get("text")
-                                if text:
-                                    yield text
-                        except (KeyError, IndexError, TypeError):
-                            continue
+                            async for c in resp.aiter_text():
+                                body_text += c
+                                if len(body_text) > 2000:
+                                    break
+                        except Exception:
+                            pass
+                        msg = body_text
+                        try:
+                            j = _json.loads(body_text)
+                            msg = j.get("error", {}).get("message", body_text)
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            f"Gemini returned {resp.status_code}: {msg}"
+                        )
+                    # 200 OK - remember which model worked.
+                    type(self)._WORKING_MODEL = model_name
+                    log.info("Gemini using model=%s", model_name)
+                    buf = ""
+                    async for raw in resp.aiter_text():
+                        buf += raw
+                        while "\n" in buf:
+                            line, buf = buf.split("\n", 1)
+                            line = line.rstrip("\r")
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[5:].strip()
+                            if not payload:
+                                continue
+                            try:
+                                evt = _json.loads(payload)
+                            except Exception:
+                                continue
+                            try:
+                                rparts = evt["candidates"][0]["content"]["parts"]
+                                for part in rparts:
+                                    text = part.get("text")
+                                    if text:
+                                        yield text
+                            except (KeyError, IndexError, TypeError):
+                                continue
+                    return   # success - don't loop further
+
+        # Every model 404'd. Surface the most recent error so the user
+        # gets a real message instead of a silent zero-chunk stream.
+        raise RuntimeError(
+            last_error or "Gemini: none of the candidate models are available on this key"
+        )
 
 
 class OpenAICompatibleBrain:
