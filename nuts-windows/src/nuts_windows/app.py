@@ -19,11 +19,16 @@ tray tooltip nudges the user at akhrots.com/app.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+import sys
 import threading
+import traceback
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from nuts_windows import bootstrap, config
 from nuts_windows.capture.audio import Recorder
@@ -159,11 +164,81 @@ class Application:
             self._speaker.speak(speakable)
 
 
+def _log_dir() -> Path:
+    """Per-user log directory: %LOCALAPPDATA%\\Akhort\\."""
+    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+    p = base / "Akhort"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _install_logging() -> Path:
+    """Set up file logging so silent crashes leave a trace.
+
+    PyInstaller's --windowed mode hides the console, so an unhandled
+    exception during startup vanishes from view. With this, the same
+    traceback is appended to %LOCALAPPDATA%\\Akhort\\Nuts.log instead.
+    Also installs a global ``sys.excepthook`` so non-Qt-loop exceptions
+    (e.g. inside startup) are captured.
+    """
+    log_path = _log_dir() / "Nuts.log"
+    logging.basicConfig(
+        filename=str(log_path),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        encoding="utf-8",
+    )
+
+    def _hook(exc_type, exc, tb):
+        logging.exception("unhandled", exc_info=(exc_type, exc, tb))
+        # Still call the default hook so console mode still prints.
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _hook
+    return log_path
+
+
 def run() -> int:
-    qt = QApplication([])
+    log_path = _install_logging()
+    log = logging.getLogger("nuts.run")
+    log.info("nuts starting; pid=%d frozen=%s", os.getpid(), getattr(sys, "frozen", False))
+
+    try:
+        qt = QApplication([])
+    except Exception:
+        log.exception("QApplication() failed")
+        return 1
     qt.setQuitOnLastWindowClosed(False)   # tray-only app
-    app = Application(qt)
+
+    # No tray? No app. Surface this loudly instead of running headlessly.
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        log.error("system tray is not available on this OS")
+        QMessageBox.critical(
+            None,
+            "Akhort - tray unavailable",
+            "Your system doesn't expose a tray. Nuts can't run without it.",
+        )
+        return 2
+
+    try:
+        app = Application(qt)
+    except Exception as e:
+        log.exception("Application init failed")
+        QMessageBox.critical(
+            None,
+            "Akhort - startup error",
+            f"Nuts couldn't start:\n\n{e}\n\nFull traceback: {log_path}",
+        )
+        return 1
+
+    log.info("nuts ready; entering event loop")
     try:
         return qt.exec()
+    except Exception:
+        log.exception("event loop crashed")
+        return 1
     finally:
-        app.shutdown()
+        try:
+            app.shutdown()
+        except Exception:
+            log.exception("shutdown failed")

@@ -18,14 +18,17 @@ this module stays UI-only.
 """
 from __future__ import annotations
 
+import logging
 import webbrowser
 from typing import Callable, Optional
 
 from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QFont
+from PyQt6.QtGui import QAction, QCursor, QIcon, QPixmap, QPainter, QColor, QFont
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from nuts_windows import config
+
+_log = logging.getLogger("nuts.tray")
 
 
 DASHBOARD_URL = "https://akhrots.com/app"
@@ -47,8 +50,27 @@ class Tray:
         self._status_action: Optional[QAction] = None
         self._build_menu()
         self._icon.setContextMenu(self._menu)
+        # Left-click should also pop the menu (right-click already does via
+        # setContextMenu). On Windows the default is right-click only, so
+        # users who left-click out of habit get nothing - this fixes that.
+        self._icon.activated.connect(self._on_activated)
         self._icon.show()
+        if not self._icon.isVisible():
+            # Some setups (rare, but happens with shell extensions or
+            # locked-down corporate Windows) silently refuse to register
+            # tray icons. Log loudly so we can find out via Nuts.log.
+            _log.error("tray icon failed to become visible after show()")
         self.refresh()
+        # Visible confirmation that the app started. This is the surface
+        # area for "it ran but I can't see it" - the user can't miss a
+        # toast notification near the clock. Auto-dismisses after ~4s.
+        self._icon.showMessage(
+            "Akhort is running",
+            "Hold Ctrl+Alt to talk. Right-click the tray icon for options.",
+            QSystemTrayIcon.MessageIcon.Information,
+            4000,
+        )
+        _log.info("tray icon shown")
 
     def refresh(self) -> None:
         """Re-read config and update the Status row + tooltip."""
@@ -65,6 +87,20 @@ class Tray:
             )
 
     # ----- internal --------------------------------------------------------
+
+    def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        """Show the menu on any icon click (left or right).
+
+        Windows treats left-click as ``Trigger`` and right-click as
+        ``Context``. setContextMenu wires the right-click for free, but
+        users who left-click out of habit got nothing. Pop the same menu
+        either way - cheap UX win.
+        """
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._menu.popup(QCursor.pos())
 
     def _build_menu(self) -> None:
         header = QAction("Akhort", self._menu)
