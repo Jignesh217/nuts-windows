@@ -320,7 +320,10 @@ class GeminiBrain:
     """Google Gemini via the public Generative Language API."""
 
     BASE = "https://generativelanguage.googleapis.com/v1beta"
-    DEFAULT_MODEL = "gemini-2.0-flash-exp"   # vision-capable, free tier
+    # Stable, vision-capable, generous free tier (1500 req/day, 15 req/min).
+    # The previous default 'gemini-2.0-flash-exp' got deprecated and now
+    # returns 404. gemini-1.5-flash is the safe long-lived choice.
+    DEFAULT_MODEL = "gemini-1.5-flash"
 
     def __init__(self, api_key: str, *, model: Optional[str] = None,
                  max_tokens: int = 400) -> None:

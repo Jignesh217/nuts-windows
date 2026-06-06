@@ -469,14 +469,24 @@ class Application(QObject):
                 short = msg[:200]
                 panel.set_response(f"Error: {short}")
                 # Spoken notice - keep it short, the full text is on screen.
-                if "403" in msg or "Forbidden" in msg:
+                # Pick a short spoken summary. Order matters: most-specific
+                # checks first. The previous 'rate' substring match was a
+                # false-positive trap because gener[ate]Content contains
+                # "rate" - we'd say 'rate limited' on a 404. Use word-
+                # boundary-ish checks instead.
+                low = msg.lower()
+                if "404" in msg or "not found" in low or "not supported" in low:
+                    spoken = "Model not found. Open Settings and pick a different model."
+                elif "403" in msg or "forbidden" in low:
                     spoken = "Provider refused the key. Check billing or model access."
-                elif "401" in msg or "Unauthorized" in msg:
+                elif "401" in msg or "unauthorized" in low:
                     spoken = "Provider says the API key is invalid."
-                elif "429" in msg or "rate" in msg.lower():
+                elif "429" in msg or "rate limit" in low or "quota" in low:
                     spoken = "Rate limited by provider."
-                elif "timeout" in msg.lower() or "timed out" in msg.lower():
+                elif "timeout" in low or "timed out" in low:
                     spoken = "Provider timed out."
+                elif "connection" in low or "name resolution" in low:
+                    spoken = "Cannot reach provider. Check internet or Ollama."
                 else:
                     spoken = "Brain request failed. See the panel for details."
                 speaker.speak(spoken)
