@@ -299,7 +299,111 @@ PROVIDER_DEFAULTS = {
         "model": "gpt-4o-mini",          # cheaper than gpt-4o; supports vision
         "vision": True,
     },
+    # Ollama exposes an OpenAI-compatible endpoint on localhost:11434/v1.
+    # The "api_key" is ignored by Ollama but httpx requires Authorization
+    # header to exist - we pass a dummy string. Default model needs
+    # `ollama pull llama3.2-vision` first; otherwise the user can override.
+    "ollama": {
+        "base_url": "http://localhost:11434/v1",
+        "model": "llama3.2-vision",
+        "vision": True,
+    },
 }
+
+
+# ---------------------------------------------------------------------------
+# Gemini (Google) - free tier 1500 req/day on gemini-2.0-flash-exp.
+# Different API shape from OpenAI (camelCase, different streaming format).
+# ---------------------------------------------------------------------------
+
+class GeminiBrain:
+    """Google Gemini via the public Generative Language API."""
+
+    BASE = "https://generativelanguage.googleapis.com/v1beta"
+    DEFAULT_MODEL = "gemini-2.0-flash-exp"   # vision-capable, free tier
+
+    def __init__(self, api_key: str, *, model: Optional[str] = None,
+                 max_tokens: int = 400) -> None:
+        self._api_key = api_key
+        self._model = model or self.DEFAULT_MODEL
+        self._max_tokens = max_tokens
+
+    async def stream(self, ctx: BrainContext) -> AsyncIterator[str]:
+        import base64, json as _json
+        import httpx
+
+        # Gemini uses 'parts' arrays of either text or inlineData. We put
+        # the image first, the text second - matches their docs' best-
+        # practice for multimodal prompts.
+        parts = []
+        if ctx.screenshot_jpeg:
+            parts.append({"inlineData": {
+                "mimeType": "image/jpeg",
+                "data": base64.b64encode(ctx.screenshot_jpeg).decode("ascii"),
+            }})
+        parts.append({"text": (
+            _SYSTEM_PROMPT + "\n\nUser: " + (ctx.transcript or "What do you see?")
+        )})
+
+        body = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "maxOutputTokens": self._max_tokens,
+                "temperature": 0.7,
+            },
+        }
+        url = (
+            f"{self.BASE}/models/{self._model}:streamGenerateContent"
+            f"?alt=sse&key={self._api_key}"
+        )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST", url, json=body,
+                headers={"Content-Type": "application/json"},
+            ) as resp:
+                if resp.status_code >= 400:
+                    body_text = ""
+                    try:
+                        async for c in resp.aiter_text():
+                            body_text += c
+                            if len(body_text) > 2000:
+                                break
+                    except Exception:
+                        pass
+                    msg = body_text
+                    try:
+                        j = _json.loads(body_text)
+                        msg = j.get("error", {}).get("message", body_text)
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"Gemini returned {resp.status_code}: {msg}"
+                    )
+                buf = ""
+                async for raw in resp.aiter_text():
+                    buf += raw
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        line = line.rstrip("\r")
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if not payload:
+                            continue
+                        try:
+                            evt = _json.loads(payload)
+                        except Exception:
+                            continue
+                        # candidates[0].content.parts[*].text
+                        try:
+                            parts = evt["candidates"][0]["content"]["parts"]
+                            for part in parts:
+                                text = part.get("text")
+                                if text:
+                                    yield text
+                        except (KeyError, IndexError, TypeError):
+                            continue
 
 
 class OpenAICompatibleBrain:
@@ -467,6 +571,27 @@ def pick_brain(worker_url: Optional[str], token: Optional[str]) -> Brain:
             api_key=key, base_url=base_url, model=model,
             supports_vision=defaults.get("vision", True),
         )
+
+    if provider == "ollama":
+        # No key required - Ollama ignores the Authorization header.
+        # We send a dummy non-empty string so httpx doesn't complain.
+        defaults = PROVIDER_DEFAULTS["ollama"]
+        base_url = settings.base_url or defaults["base_url"]
+        model = settings.model or defaults["model"]
+        log.info("brain: OllamaBrain (OpenAI-compat) model=%s base=%s", model, base_url)
+        return OpenAICompatibleBrain(
+            api_key="ollama-local-noop",  # ignored
+            base_url=base_url, model=model,
+            supports_vision=True,
+        )
+
+    if provider == "gemini":
+        key = settings.api_key
+        if not key:
+            log.warning("provider=gemini but no API key - falling back to DemoBrain")
+            return DemoBrain()
+        log.info("brain: GeminiBrain (model override=%s)", settings.model)
+        return GeminiBrain(key, model=settings.model)
 
     if provider == "custom":
         key = settings.api_key

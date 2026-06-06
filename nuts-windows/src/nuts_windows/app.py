@@ -145,14 +145,19 @@ class Application(QObject):
         # in demo mode or talking to a real LLM. Done after _panel is
         # constructed so the call lands on the live widget.
         brain_name = type(self._brain).__name__
+        from nuts_windows import config as _cfg
+        s = _cfg.load_brain_settings()
         if brain_name == "DemoBrain":
-            self._panel.set_signin("DEMO mode — open Settings to add an API key")
+            self._panel.set_signin("DEMO mode — open Settings to pick a brain")
         elif brain_name == "AnthropicBrain":
             self._panel.set_signin("Claude vision (Anthropic) — live")
+        elif brain_name == "GeminiBrain":
+            self._panel.set_signin("Google Gemini — live (free tier)")
         elif brain_name == "OpenAICompatibleBrain":
-            from nuts_windows import config as _cfg
-            s = _cfg.load_brain_settings()
-            self._panel.set_signin(f"{s.provider.capitalize()} — live")
+            if s.provider == "ollama":
+                self._panel.set_signin(f"Ollama local ({s.model or 'llama3.2-vision'}) — live")
+            else:
+                self._panel.set_signin(f"{s.provider.capitalize()} — live")
         elif brain_name == "WorkerBrain":
             self._panel.set_signin("Worker proxy — live")
         # Pre-load Whisper in the background so the FIRST push-to-talk
@@ -264,14 +269,19 @@ class Application(QObject):
         self._brain = pick_brain(self._cfg.worker_url, self._cfg.token)
         brain_name = type(self._brain).__name__
         wlog.info("brain reloaded -> %s", brain_name)
+        from nuts_windows import config as _cfg
+        s = _cfg.load_brain_settings()
         if brain_name == "DemoBrain":
-            self._panel.set_signin("DEMO mode — open Settings to add an API key")
+            self._panel.set_signin("DEMO mode — open Settings to pick a brain")
         elif brain_name == "AnthropicBrain":
             self._panel.set_signin("Claude vision (Anthropic) — live")
+        elif brain_name == "GeminiBrain":
+            self._panel.set_signin("Google Gemini — live (free tier)")
         elif brain_name == "OpenAICompatibleBrain":
-            from nuts_windows import config as _cfg
-            s = _cfg.load_brain_settings()
-            self._panel.set_signin(f"{s.provider.capitalize()} — live")
+            if s.provider == "ollama":
+                self._panel.set_signin(f"Ollama local ({s.model or 'llama3.2-vision'}) — live")
+            else:
+                self._panel.set_signin(f"{s.provider.capitalize()} — live")
         elif brain_name == "WorkerBrain":
             self._panel.set_signin("Worker proxy — live")
 

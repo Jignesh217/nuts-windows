@@ -35,12 +35,15 @@ _log = logging.getLogger("nuts.settings")
 
 
 # (display label, provider id, hint, key url)
+# Order: truly free first (no key OR free tier), then paid, then custom.
 PROVIDERS = [
-    ("Demo mode (offline)",       "demo",       "No key — rule-based responses for testing",                          ""),
-    ("Grok (xAI)",                "grok",       "xai-... — free tier with monthly credits",                          "https://console.x.ai/"),
-    ("Anthropic Claude",          "anthropic",  "sk-ant-api03-... — paid, best vision quality",                       "https://console.anthropic.com/settings/keys"),
-    ("OpenAI GPT-4o",             "openai",     "sk-proj-... or sk-... — paid, also great vision",                    "https://platform.openai.com/api-keys"),
-    ("Custom OpenAI-compatible",  "custom",     "Bring your own URL — useful for self-hosted / Akhrot integration",   ""),
+    ("Ollama (local — fully free)",      "ollama",     "No key — runs on your machine. Install Ollama first, then `ollama pull llama3.2-vision`.",  "https://ollama.com/download"),
+    ("Google Gemini (free tier 1500/day)", "gemini",   "Free key from Google AI Studio. ~1500 requests/day on gemini-2.0-flash-exp.",                "https://aistudio.google.com/apikey"),
+    ("Demo mode (offline canned replies)", "demo",     "No key — rule-based responses. Useful only for testing UI.",                                 ""),
+    ("Grok (xAI)",                       "grok",       "xai-... — needs paid credits in console.x.ai.",                                              "https://console.x.ai/"),
+    ("Anthropic Claude",                 "anthropic",  "sk-ant-api03-... — paid. Best vision quality.",                                              "https://console.anthropic.com/settings/keys"),
+    ("OpenAI GPT-4o",                    "openai",     "sk-proj-... or sk-... — paid, also great vision.",                                           "https://platform.openai.com/api-keys"),
+    ("Custom OpenAI-compatible",         "custom",     "Bring your own URL — for self-hosted models or your Akhrot LLM.",                            ""),
 ]
 
 
@@ -331,21 +334,33 @@ class SettingsDialog(QWidget):
         _label, prov_id, hint, url = PROVIDERS[idx]
         self._provider_hint.setText(hint)
         if url:
-            self._provider_link.setText("Get a key →")
+            # Different verb for download-vs-signup vs key generation.
+            label = (
+                "Download Ollama →" if prov_id == "ollama" else
+                "Get a key →"
+            )
+            self._provider_link.setText(label)
             self._provider_link.setProperty("_url", url)
             self._provider_link.setVisible(True)
         else:
             self._provider_link.setVisible(False)
         self._status.setVisible(False)
 
-        is_demo = prov_id == "demo"
+        # Providers that DON'T require an API key live here so the field
+        # gets disabled and the placeholder explains. Ollama uses a
+        # localhost endpoint with no auth; Demo doesn't talk to a model.
+        keyless = prov_id in ("demo", "ollama")
         is_custom = prov_id == "custom"
-        self._key_input.setEnabled(not is_demo)
-        self._show_btn.setEnabled(not is_demo)
-        if is_demo:
-            self._key_input.setPlaceholderText("(no key needed for Demo)")
+
+        self._key_input.setEnabled(not keyless)
+        self._show_btn.setEnabled(not keyless)
+        if prov_id == "demo":
+            self._key_input.setPlaceholderText("(no key needed — offline)")
+        elif prov_id == "ollama":
+            self._key_input.setPlaceholderText("(no key needed — local Ollama)")
         else:
             self._key_input.setPlaceholderText("Paste your provider key…")
+
         self._custom_url_label.setVisible(is_custom)
         self._custom_url_input.setVisible(is_custom)
         self._model_label.setVisible(is_custom)
@@ -365,7 +380,8 @@ class SettingsDialog(QWidget):
         base_url = self._custom_url_input.text().strip() or None
         model = self._model_input.text().strip() or None
 
-        if prov_id != "demo" and not key:
+        # Demo + Ollama don't need a key. Everything else does.
+        if prov_id not in ("demo", "ollama") and not key:
             self._show_status(False, "API key is required for this provider.")
             return
         if prov_id == "custom" and not base_url:
@@ -383,11 +399,13 @@ class SettingsDialog(QWidget):
             return
 
         nice = {
-            "demo": "Demo mode",
+            "demo":      "Demo mode",
+            "ollama":    "Ollama (local)",
+            "gemini":    "Google Gemini",
             "anthropic": "Claude (Anthropic)",
-            "grok": "Grok (xAI)",
-            "openai": "OpenAI GPT-4o",
-            "custom": "your custom endpoint",
+            "grok":      "Grok (xAI)",
+            "openai":    "OpenAI GPT-4o",
+            "custom":    "your custom endpoint",
         }.get(prov_id, prov_id)
         self._show_status(True, f"Saved. Akhort is now using {nice}.")
         self.saved.emit()
