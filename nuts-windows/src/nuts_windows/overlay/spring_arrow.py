@@ -60,15 +60,22 @@ class SpringArrow(QWidget):
     TRAIL_LEN = 18
     POINT_HOLD_MS = 2400   # how long a [POINT:x,y] target stays locked
     # Offset from the cursor for the FOLLOW state, in screen pixels.
-    # The arrow trails to the upper-right of the cursor so it never sits
-    # directly under what the user is trying to click/read. When the
-    # model gives a [POINT:x,y] target, we drop the offset (the arrow
-    # should land ON the target, not next to it).
-    FOLLOW_OFFSET_X = 36
-    FOLLOW_OFFSET_Y = -36
+    # The arrow trails BELOW the cursor (positive Y is down on screen) so
+    # the actual cursor stays clean for reading / clicking. Roughly the
+    # width of a fingertip - close enough to feel attached, far enough
+    # not to occlude. When the model gives a [POINT:x,y] target, we
+    # drop the offset so the arrow lands ON the target.
+    FOLLOW_OFFSET_X = 6
+    FOLLOW_OFFSET_Y = 30
+
+    # User-changeable arrow color. Updated at runtime via set_color().
+    # Default tan matches the brand. Stored on the instance, not class,
+    # so multiple SpringArrow instances (hypothetical) don't share state.
+    _DEFAULT_COLOR = QColor(245, 215, 145)
 
     def __init__(self) -> None:
         super().__init__(None)
+        self._user_color = self._DEFAULT_COLOR
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -109,6 +116,16 @@ class SpringArrow(QWidget):
     def set_state(self, state: str) -> None:
         """Change the visual state (idle / listening / pointing)."""
         self._state = state
+
+    def set_color(self, hex_or_color: str | QColor) -> None:
+        """Update the arrow's idle / pointing color at runtime. Called by
+        the HoverPanel color picker. Listening state stays green so the
+        recording feedback is consistent regardless of user pref."""
+        if isinstance(hex_or_color, QColor):
+            self._user_color = hex_or_color
+        else:
+            self._user_color = QColor(hex_or_color)
+        self.update()
 
     def fly_to(self, abs_x: int, abs_y: int, *, label: str = "") -> None:
         """Direct the arrow to a desktop coord for POINT_HOLD_MS, then
@@ -176,11 +193,14 @@ class SpringArrow(QWidget):
     # ----- paint ----------------------------------------------------------
 
     def _state_color(self) -> QColor:
+        # Listening always green so the recording feedback is
+        # unambiguous regardless of the user's idle-color choice.
         if self._state == STATE_LISTENING:
-            return QColor(47, 122, 79)        # green
-        if self._state == STATE_POINTING:
-            return QColor(245, 215, 145)      # bright tan
-        return QColor(245, 215, 145)          # tan idle (same hue, less saturation handled by alpha)
+            return QColor(47, 122, 79)
+        # Pointing and idle both use the user-selected color (default
+        # tan). Different state alphas/halos make them visually
+        # distinct without needing different hues.
+        return QColor(self._user_color)
 
     def paintEvent(self, _event) -> None:
         # Translate desktop coords into widget-local. The overlay's
@@ -216,14 +236,11 @@ class SpringArrow(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(head, halo_r, halo_r)
 
-        # 3) Arrowhead. Rotated to align with velocity (with a minimum
-        # speed threshold so it doesn't spin wildly when idle).
-        speed = math.hypot(self._vel.x(), self._vel.y())
-        if speed > 60:
-            angle = math.atan2(self._vel.y(), self._vel.x())
-        else:
-            angle = -math.pi / 4   # idle default: pointer-style up-left
-        self._draw_arrow(p, head, angle, core=color)
+        # 3) Arrowhead - ALWAYS pointing up-left like Windows' real
+        # cursor. Velocity-based rotation looked busy in v0.5; matching
+        # the OS pointer is what users expect from a "spirit cursor".
+        # -3*pi/4 = "up and to the left" in screen coords.
+        self._draw_arrow(p, head, -3 * math.pi / 4, core=color)
 
         # 4) Optional utterance label near the target
         if self._point_label and self._state == STATE_POINTING:
@@ -236,14 +253,18 @@ class SpringArrow(QWidget):
         p.save()
         p.translate(at)
         p.rotate(math.degrees(angle) + 90)
+        # Classic Windows-pointer silhouette, scaled small. Tip at top,
+        # tail at bottom-right and bottom-left, with a notch.
         tri = QPolygonF([
-            QPointF(0, -12),
-            QPointF(9, 9),
-            QPointF(0, 4),
-            QPointF(-9, 9),
+            QPointF(0, -13),
+            QPointF(10, 10),
+            QPointF(0, 5),
+            QPointF(-10, 10),
         ])
-        outline = QPen(QColor(31, 27, 22, 220)); outline.setWidth(2)
-        p.setPen(outline)
+        # No outline - the user explicitly asked for the black border to
+        # go away. Halo behind the arrowhead provides the contrast on
+        # any background instead.
+        p.setPen(Qt.PenStyle.NoPen)
         c = QColor(core); c.setAlpha(245)
         p.setBrush(QBrush(c))
         p.drawPolygon(tri)

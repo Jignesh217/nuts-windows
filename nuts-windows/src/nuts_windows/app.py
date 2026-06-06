@@ -38,8 +38,8 @@ from nuts_windows.brain import BrainContext, pick_brain
 from nuts_windows.hotkey import PushToTalk
 from nuts_windows.overlay import cursor as cursor_mod
 from nuts_windows.overlay.indicator import CursorIndicator, MicBadge
-from nuts_windows.overlay.persistent_badge import (
-    PersistentBadge,
+from nuts_windows.overlay.hover_bar import (
+    HoverBar,
     STATE_IDLE,
     STATE_LISTENING,
     STATE_BUSY,
@@ -49,7 +49,10 @@ from nuts_windows.overlay.spring_arrow import (
     STATE_IDLE as ARROW_IDLE,
     STATE_LISTENING as ARROW_LISTENING,
 )
-from nuts_windows.overlay.panel import ControlPanel
+# ControlPanel was the old separate floating window; replaced by HoverBar
+# which is BOTH the persistent indicator and the expanded panel. Kept the
+# import absent so any stale references blow up loudly instead of
+# silently importing dead code.
 from nuts_windows.memory import Memory
 from nuts_windows.transport.worker import WorkerClient, WorkerRequest
 from nuts_windows.tray import Tray
@@ -90,30 +93,34 @@ class Application:
         # ring that tracks the cursor while the user is holding the
         # push-to-talk hotkey. PointArrow is the marker drawn when the
         # model emits [POINT:x,y] tags.
-        self._panel = ControlPanel(
-            on_open_dashboard=self._open_dashboard,
-            on_signout=self._handle_signout,
-            on_quit=self._quit,
-        )
         self._cursor_indicator = CursorIndicator()
         self._mic_badge = MicBadge()
-        # SpringArrow replaces the old PointOverlay (single static flash).
-        # It's a single full-screen click-through overlay that ALWAYS
-        # follows the user's cursor with spring physics, and redirects to
-        # any [POINT:x,y] target the model emits. Same widget handles both
-        # the "always-alive" follow AND the "fly to here" gesture, with the
-        # spring math smoothing the transition.
+        # SpringArrow follows the cursor with spring physics, redirects
+        # to any [POINT:x,y] target the model emits, and reads its color
+        # from the user's saved choice in config (color picker in the
+        # HoverBar below sets it).
         self._spring_arrow = SpringArrow()
+        self._spring_arrow.set_color(self._cfg.arrow_color)
         self._spring_arrow.start()
         self._spring_arrow.set_state(ARROW_IDLE)
-        # Persistent badge - always visible just above the taskbar clock.
-        # Hover halo intensifies, click toggles the floating panel. We
-        # show this UP FRONT so users don't have to hunt for the tray
-        # icon (Win11 hides it behind a chevron by default).
-        self._persistent_badge = PersistentBadge()
-        self._persistent_badge.clicked.connect(self._panel.toggle_near_tray)
-        self._persistent_badge.show_()
-        self._persistent_badge.set_state(STATE_IDLE)
+        # HoverBar replaces both the old PersistentBadge AND the old
+        # floating ControlPanel. It IS the persistent indicator (small
+        # horizontal pill above the clock) AND the full panel (expanded
+        # on hover). All the panel buttons + color picker live there.
+        # We treat self._panel as an alias so existing code that calls
+        # self._panel.set_status() etc. still works.
+        self._panel = HoverBar()
+        self._panel.set_active_color(self._cfg.arrow_color)
+        self._panel.quit_requested.connect(self._quit)
+        self._panel.signout_requested.connect(self._handle_signout)
+        self._panel.open_dashboard_requested.connect(self._open_dashboard)
+        self._panel.color_chosen.connect(self._on_color_chosen)
+        self._panel.show_()
+        self._panel.set_state(STATE_IDLE)
+        # Used by every legacy line that called self._persistent_badge -
+        # they all just want to flip the state-color, which the HoverBar
+        # already exposes via set_state(). Alias keeps the diff small.
+        self._persistent_badge = self._panel
         # Memory: local on-disk JSONL store for "remember this" voice
         # commands. Loaded once, written incrementally. Lives in the
         # same %LOCALAPPDATA%\Akhort directory as the log file.
@@ -129,7 +136,11 @@ class Application:
             qt_app,
             on_reload=self._reload,
             on_quit=self._quit,
-            on_left_click=self._panel.toggle_near_tray,
+            # Tray left-click now just briefly shows the bar (in case it
+            # was hidden by some other app's overlay) - the HoverBar
+            # itself handles expansion on actual hover. No more separate
+            # toggle window.
+            on_left_click=self._panel.show_,
             on_test_arrow=self._demo_arrow,
         )
         self._hotkey = PushToTalk(
@@ -188,6 +199,16 @@ class Application:
         config.clear_credentials()
         self._cfg = config.load()
         self._sync_panel_state()
+
+    def _on_color_chosen(self, hex_color: str) -> None:
+        """User picked a swatch in the HoverBar - apply + persist."""
+        try:
+            config.save_arrow_color(hex_color)
+        except Exception:
+            # Keyring can fail under locked-down corp profiles; the live
+            # in-memory state still updates, just won't survive restart.
+            pass
+        self._spring_arrow.set_color(hex_color)
 
     def _sync_panel_state(self) -> None:
         """Push the latest config + status into the floating panel."""

@@ -27,9 +27,13 @@ import keyring
 SERVICE = "com.akhrots.nuts"
 ACCOUNT_TOKEN = "mcp-bearer"
 ACCOUNT_URL = "worker-url"
+ACCOUNT_ARROW_COLOR = "arrow-color"
 
 DEFAULT_WORKER_URL = "https://akhrots.com/mcp"
 DEFAULT_HOTKEY = "<ctrl>+<alt>"   # pynput-style notation
+# Tan that matches the akhrots.com dashboard brand. The HoverPanel
+# color-picker swatches override this at runtime.
+DEFAULT_ARROW_COLOR = "#f5d791"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,7 @@ class Config:
     worker_url: str
     token: Optional[str]   # None when the user hasn't signed in yet
     hotkey: str            # pynput key combo, e.g. "<ctrl>+<alt>"
+    arrow_color: str       # CSS-style hex string set by the color picker
 
     @property
     def signed_in(self) -> bool:
@@ -52,7 +57,18 @@ def load() -> Config:
     url = env_url or keyring.get_password(SERVICE, ACCOUNT_URL) or DEFAULT_WORKER_URL
     token = env_token or keyring.get_password(SERVICE, ACCOUNT_TOKEN)
     hotkey = env_hotkey or DEFAULT_HOTKEY
-    return Config(worker_url=url, token=token, hotkey=hotkey)
+    arrow_color = (
+        keyring.get_password(SERVICE, ACCOUNT_ARROW_COLOR)
+        or DEFAULT_ARROW_COLOR
+    )
+    return Config(
+        worker_url=url, token=token, hotkey=hotkey, arrow_color=arrow_color,
+    )
+
+
+def save_arrow_color(hex_color: str) -> None:
+    """Persist the user's arrow-color pick so it survives restarts."""
+    keyring.set_password(SERVICE, ACCOUNT_ARROW_COLOR, hex_color)
 
 
 def save_credentials(url: str, token: str) -> None:
