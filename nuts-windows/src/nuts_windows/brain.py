@@ -360,7 +360,30 @@ class OpenAICompatibleBrain:
                 "POST", f"{self._base_url}/chat/completions",
                 json=body, headers=headers,
             ) as resp:
-                resp.raise_for_status()
+                # Surface the provider's actual error body on 4xx/5xx
+                # instead of the generic 'Client error 403' that gives
+                # the user nothing to act on. xAI / OpenAI both return
+                # JSON like {"error":{"message":"..."}} which tells you
+                # if the key lacks credits, the model is gated, etc.
+                if resp.status_code >= 400:
+                    body_text = ""
+                    try:
+                        async for chunk in resp.aiter_text():
+                            body_text += chunk
+                            if len(body_text) > 2000:
+                                break
+                    except Exception:
+                        pass
+                    # Try to dig the message out of the JSON envelope.
+                    msg = body_text
+                    try:
+                        j = _json.loads(body_text)
+                        msg = j.get("error", {}).get("message") or j.get("error") or body_text
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"{self._base_url} returned {resp.status_code}: {msg}"
+                    )
                 buf = ""
                 async for raw in resp.aiter_text():
                     buf += raw

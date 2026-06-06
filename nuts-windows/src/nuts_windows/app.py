@@ -448,7 +448,29 @@ class Application(QObject):
                     self._handle_chunk(chunk, snap.monitors)
                 _t_log.info("brain.stream END (%d chunks)", chunk_count)
             except Exception as e:
+                # The brain failed before producing any text. Without
+                # this branch the pipeline just goes silent ('idle') and
+                # the user has no idea what went wrong. Show the error
+                # in the panel + speak a short notice so they know.
                 _t_log.exception("brain.stream FAILED: %s", e)
+                msg = str(e)
+                # Try to extract the most useful sub-string. Provider
+                # error messages tend to be the most informative bit.
+                short = msg[:200]
+                panel.set_response(f"Error: {short}")
+                # Spoken notice - keep it short, the full text is on screen.
+                if "403" in msg or "Forbidden" in msg:
+                    spoken = "Provider refused the key. Check billing or model access."
+                elif "401" in msg or "Unauthorized" in msg:
+                    spoken = "Provider says the API key is invalid."
+                elif "429" in msg or "rate" in msg.lower():
+                    spoken = "Rate limited by provider."
+                elif "timeout" in msg.lower() or "timed out" in msg.lower():
+                    spoken = "Provider timed out."
+                else:
+                    spoken = "Brain request failed. See the panel for details."
+                speaker.speak(spoken)
+                speaker.flush()
             finally:
                 # Flush any text the speaker is still holding (a trailing
                 # fragment without a sentence-ending punctuation). Without
